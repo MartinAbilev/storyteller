@@ -1,27 +1,8 @@
 import React, { useState, useEffect } from 'react';
 
-interface Character {
-  name: string;
-  gender: string;
-  role: string;
-  traits: string;
-  affiliations?: string;
-}
-
-interface KeyElements {
-  characters: Character[];
-  keyEvents: string[];
-  timeline: string[];
-  uniqueDetails: string[];
-  mainStoryLines: string[];
-}
-
 interface Chapter {
   title: string;
   summary: string;
-  keyEvents?: string[];
-  characterTraits?: string[];
-  timeline?: string;
   details?: string;
   expansionCount?: number;
   customPrompt?: string;
@@ -37,7 +18,6 @@ const StoryExpander: React.FC = () => {
   const [error, setError] = useState<string>('');
   const [rawError, setRawError] = useState<string>('');
   const [condensedDraft, setCondensedDraft] = useState<string>('');
-  const [keyElements, setKeyElements] = useState<KeyElements | null>(null);
   const [summaryPrompt, setSummaryPrompt] = useState<string>('');
   const [editingSummaryPrompt, setEditingSummaryPrompt] = useState<boolean>(false);
   const [chapters, setChapters] = useState<Chapter[]>([]);
@@ -45,7 +25,7 @@ const StoryExpander: React.FC = () => {
   const [expansionCounts, setExpansionCounts] = useState<number[]>([]);
   const [chapterPrompts, setChapterPrompts] = useState<string[]>([]);
   const [editingChapterPrompt, setEditingChapterPrompt] = useState<number | null>(null);
-  const [currentStep, setCurrentStep] = useState<number>(0); // 0: summarize, 1: extract key elements, 2: outline, 3: expand
+  const [currentStep, setCurrentStep] = useState<number>(0);
   const [currentChapterIndex, setCurrentChapterIndex] = useState<number>(0);
   const [draftHash, setDraftHash] = useState<string>('');
   const [chapterLoading, setChapterLoading] = useState<number | null>(null);
@@ -58,8 +38,8 @@ const StoryExpander: React.FC = () => {
     { value: 'gpt-5-mini', label: 'GPT-5-mini (Efficient)' },
   ];
 
-  const totalSteps = 4 + (chapters.length || 6) + expansionCounts.reduce((sum, count) => sum + count, 0);
-  const completedSteps = currentStep + (currentStep === 3 ? currentChapterIndex : 0) + expansionCounts.reduce((sum, count) => sum + count, 0);
+  const totalSteps = 3 + (chapters.length || 6) + expansionCounts.reduce((sum, count) => sum + count, 0);
+  const completedSteps = currentStep + (currentStep === 2 ? currentChapterIndex : 0) + expansionCounts.reduce((sum, count) => sum + count, 0);
   const progressPercent = ((completedSteps / totalSteps) * 100).toFixed(1);
 
   const hashDraft = async (text: string): Promise<string> => {
@@ -78,7 +58,6 @@ const StoryExpander: React.FC = () => {
         const currentHash = await hashDraft(draft);
         if (progress.draftHash === currentHash) {
           setCondensedDraft(progress.condensedDraft || '');
-          setKeyElements(progress.keyElements || null);
           setSummaryPrompt(progress.summaryPrompt || '');
           setChapters(progress.chapters || []);
           setExpandedChapters(progress.expandedChapters || []);
@@ -87,7 +66,7 @@ const StoryExpander: React.FC = () => {
           setCurrentStep(progress.currentStep || 0);
           setCurrentChapterIndex(progress.currentChapterIndex || 0);
           setDraftHash(currentHash);
-          setModel(progress.model || 'gpt-5');
+          setModel(progress.model || 'gpt-5'); // Load saved model
           setStatus('Loaded saved progress—click Continue or inspect results.');
         } else {
           setStatus('Draft changed—clear progress or start fresh.');
@@ -101,7 +80,6 @@ const StoryExpander: React.FC = () => {
     const progress = {
       draftHash,
       condensedDraft,
-      keyElements,
       summaryPrompt,
       chapters,
       expandedChapters,
@@ -117,7 +95,6 @@ const StoryExpander: React.FC = () => {
   const clearProgress = () => {
     localStorage.removeItem(LOCAL_STORAGE_KEY);
     setCondensedDraft('');
-    setKeyElements(null);
     setSummaryPrompt('');
     setChapters([]);
     setExpandedChapters([]);
@@ -148,14 +125,13 @@ const StoryExpander: React.FC = () => {
       }
       const data = await response.json();
       setCondensedDraft(data.condensedDraft);
-      setKeyElements(null);
       setChapters([]);
       setExpandedChapters([]);
       setExpansionCounts([]);
       setChapterPrompts([]);
-      setCurrentStep(0);
+      setCurrentStep(1);
       setCurrentChapterIndex(0);
-      setStatus('Summary regenerated—proceeding to extract key elements.');
+      setStatus('Summary regenerated—proceeding to outline.');
       saveProgress();
     } catch (err: any) {
       setError(`Regeneration failed: ${err.message || 'Unknown error'}. Try again.`);
@@ -187,52 +163,29 @@ const StoryExpander: React.FC = () => {
         setStatus('Step 1 complete: Condensed draft ready (see below).');
         saveProgress();
       } else if (currentStep === 1) {
-        setStatus('Step 2: Extracting key elements...');
-        const response = await fetch('/api/extract-key-elements', {
+        setStatus('Step 2: Generating chapter outline...');
+        const response = await fetch('/api/generate-outline', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ condensedDraft, model, customPrompt: summaryPrompt }),
         });
         if (!response.ok) {
           const errData = await response.json();
-          throw Object.assign(new Error(errData.error || 'Key elements extraction failed'), { rawResponse: errData.rawResponse || '' });
-        }
-        const data = await response.json();
-        setKeyElements(data.keyElements);
-        setCurrentStep(2);
-        setStatus('Step 2 complete: Key elements extracted (see below).');
-        saveProgress();
-      } else if (currentStep === 2) {
-        setStatus('Step 3: Generating chapter outline...');
-        const response = await fetch('/api/generate-outline', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ condensedDraft, model, customPrompt: summaryPrompt, keyElements }),
-        });
-        if (!response.ok) {
-          const errData = await response.json();
           throw Object.assign(new Error(errData.error || 'Outline failed'), { rawResponse: errData.rawResponse || '' });
         }
         const data = await response.json();
-        const validatedChapters = data.chapters.map((ch: Chapter) => ({
-          title: ch.title || 'Untitled Chapter',
-          summary: ch.summary || 'No summary available.',
-          keyEvents: Array.isArray(ch.keyEvents) ? ch.keyEvents : [],
-          characterTraits: Array.isArray(ch.characterTraits) ? ch.characterTraits : [],
-          timeline: ch.timeline || 'Unknown timeline',
-        }));
-        setChapters(validatedChapters);
-        setExpandedChapters(new Array(validatedChapters.length).fill(''));
-        setExpansionCounts(new Array(validatedChapters.length).fill(0));
-        setChapterPrompts(new Array(validatedChapters.length).fill(''));
-        setCurrentStep(3);
+        setChapters(data.chapters);
+        setExpandedChapters(new Array(data.chapters.length).fill(''));
+        setExpansionCounts(new Array(data.chapters.length).fill(0));
+        setChapterPrompts(new Array(data.chapters.length).fill(''));
+        setCurrentStep(2);
         setCurrentChapterIndex(0);
-        setStatus('Step 3 complete: Outline generated (see below).');
+        setStatus('Step 2 complete: Outline generated (see below).');
         saveProgress();
-      } else if (currentStep === 3 && currentChapterIndex < chapters.length) {
+      } else if (currentStep === 2 && currentChapterIndex < chapters.length) {
         const chapter = chapters[currentChapterIndex];
         const customPrompt = chapterPrompts[currentChapterIndex] || '';
-        setStatus(`Step 4: Expanding chapter ${currentChapterIndex + 1}/${chapters.length} ("${chapter.title}")...`);
+        setStatus(`Step 3: Expanding chapter ${currentChapterIndex + 1}/${chapters.length} ("${chapter.title}")...`);
         setChapterLoading(currentChapterIndex);
         const response = await fetch('/api/expand-chapter', {
           method: 'POST',
@@ -246,7 +199,6 @@ const StoryExpander: React.FC = () => {
             chapterIndex: currentChapterIndex,
             previousChapters: chapters.slice(0, currentChapterIndex),
             totalChapters: chapters.length,
-            keyElements,
           }),
         });
         if (!response.ok) {
@@ -317,7 +269,6 @@ const StoryExpander: React.FC = () => {
           chapterIndex,
           previousChapters: chapters.slice(0, chapterIndex),
           totalChapters: chapters.length,
-          keyElements,
         }),
       });
       if (!response.ok) {
@@ -367,7 +318,7 @@ const StoryExpander: React.FC = () => {
 
   useEffect(() => {
     console.log(`[Frontend] useEffect triggered: step=${currentStep}, chapterIndex=${currentChapterIndex}, chapters=${chapters.length}, loading=${isLoading}`);
-    if (isLoading || (currentStep === 3 && currentChapterIndex >= chapters.length)) return;
+    if (isLoading || (currentStep === 2 && currentChapterIndex >= chapters.length)) return;
     if (currentStep > 0 || condensedDraft) {
       processStep();
     }
@@ -414,7 +365,7 @@ const StoryExpander: React.FC = () => {
           <button
             type="button"
             onClick={handleContinue}
-            disabled={isLoading || (currentStep === 3 && currentChapterIndex >= chapters.length)}
+            disabled={isLoading || (currentStep === 2 && currentChapterIndex >= chapters.length)}
             className="px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50"
           >
             Continue
@@ -476,7 +427,7 @@ const StoryExpander: React.FC = () => {
               <textarea
                 value={summaryPrompt}
                 onChange={(e) => setSummaryPrompt(e.target.value)}
-                placeholder="Enter custom prompt for summarization (e.g., 'Character A is female, Character B is male, emphasize dramatic themes')"
+                placeholder="Enter custom prompt for summarization (e.g., 'Character A is female, Character B is male, emphasize grimdark themes')"
                 className="w-full p-2 border border-gray-300 rounded-md"
               />
               <button
@@ -495,42 +446,9 @@ const StoryExpander: React.FC = () => {
         </details>
       )}
 
-      {keyElements && (
-        <details open={currentStep === 2} className="bg-white p-6 rounded-lg shadow-md">
-          <summary className="cursor-pointer font-medium text-blue-600 mb-2">Step 2: Key Elements</summary>
-          <div className="space-y-4">
-            <h3 className="font-semibold text-gray-800">Characters</h3>
-            <ul className="list-disc pl-5">
-              {keyElements.characters.map((char, idx) => (
-                <li key={idx}>
-                  {char.name}: {char.gender}, {char.role}, {char.traits}
-                  {char.affiliations ? `, affiliated with ${char.affiliations}` : ''}
-                </li>
-              ))}
-            </ul>
-            <h3 className="font-semibold text-gray-800">Key Events</h3>
-            <ul className="list-disc pl-5">
-              {keyElements.keyEvents.map((event, idx) => <li key={idx}>{event}</li>)}
-            </ul>
-            <h3 className="font-semibold text-gray-800">Timeline</h3>
-            <ul className="list-disc pl-5">
-              {keyElements.timeline.map((time, idx) => <li key={idx}>{time}</li>)}
-            </ul>
-            <h3 className="font-semibold text-gray-800">Unique Details</h3>
-            <ul className="list-disc pl-5">
-              {keyElements.uniqueDetails.map((detail, idx) => <li key={idx}>{detail}</li>)}
-            </ul>
-            <h3 className="font-semibold text-gray-800">Main Story Lines</h3>
-            <ul className="list-disc pl-5">
-              {keyElements.mainStoryLines.map((line, idx) => <li key={idx}>{line}</li>)}
-            </ul>
-          </div>
-        </details>
-      )}
-
       {chapters.length > 0 && (
-        <details open={currentStep === 3} className="bg-white p-6 rounded-lg shadow-md">
-          <summary className="cursor-pointer font-medium text-blue-600 mb-2">Step 3: Chapter Outlines</summary>
+        <details open={currentStep === 2} className="bg-white p-6 rounded-lg shadow-md">
+          <summary className="cursor-pointer font-medium text-blue-600 mb-2">Step 2: Chapter Outlines</summary>
           <ul className="space-y-4 mt-4">
             {chapters.map((chapter, idx) => (
               <li key={idx} className="border-l-4 border-blue-500 pl-4">
@@ -565,24 +483,6 @@ const StoryExpander: React.FC = () => {
                   <p className="text-sm text-gray-600 italic mb-2">Custom Prompt: {chapterPrompts[idx] || 'None'}</p>
                 )}
                 <p className="text-sm text-gray-600 italic">Summary: {chapter.summary}</p>
-                <h4 className="font-medium">Key Events</h4>
-                <ul className="list-disc pl-5">
-                  {Array.isArray(chapter.keyEvents) && chapter.keyEvents.length > 0 ? (
-                    chapter.keyEvents.map((event, eIdx) => <li key={eIdx}>{event}</li>)
-                  ) : (
-                    <li>No key events available.</li>
-                  )}
-                </ul>
-                <h4 className="font-medium">Character Traits</h4>
-                <ul className="list-disc pl-5">
-                  {Array.isArray(chapter.characterTraits) && chapter.characterTraits.length > 0 ? (
-                    chapter.characterTraits.map((trait, tIdx) => <li key={tIdx}>{trait}</li>)
-                  ) : (
-                    <li>No character traits available.</li>
-                  )}
-                </ul>
-                <h4 className="font-medium">Timeline</h4>
-                <p>{chapter.timeline || 'No timeline available.'}</p>
               </li>
             ))}
           </ul>
@@ -590,8 +490,8 @@ const StoryExpander: React.FC = () => {
       )}
 
       {expandedChapters.some(ch => ch) && (
-        <details open={currentStep === 3} className="bg-white p-6 rounded-lg shadow-md">
-          <summary className="cursor-pointer font-medium text-blue-600 mb-2">Step 4: Expanded Chapters</summary>
+        <details open={currentStep === 2} className="bg-white p-6 rounded-lg shadow-md">
+          <summary className="cursor-pointer font-medium text-blue-600 mb-2">Step 3: Expanded Chapters</summary>
           <div className="space-y-6">
             {chapters.map((chapter, idx) => (
               expandedChapters[idx] && (
@@ -633,11 +533,11 @@ const StoryExpander: React.FC = () => {
                       </button>
                     </div>
                   ) : (
-                    <p className="text-sm text-gray-600 italic mb-2">Custom Prompt: {chapterPrompts[idx] || 'None'}</p>
+                    <p className="text-sm text-gray-600 italic mb-2">Custom Prompt: ${chapterPrompts[idx] || 'None'}</p>
                   )}
-                  <p className="text-sm text-gray-600 italic mb-2">Summary: {chapter.summary}</p>
+                  <p className="text-sm text-gray-600 italic mb-2">Summary: ${chapter.summary}</p>
                   <div className="prose max-w-none text-gray-700">
-                    <p>{expandedChapters[idx]}</p>
+                    <p>${expandedChapters[idx]}</p>
                   </div>
                 </div>
               )
@@ -647,7 +547,7 @@ const StoryExpander: React.FC = () => {
       )}
 
       {fullStory && chapters.some((_, idx) => expandedChapters[idx]) && (
-        <details open={currentStep === 3 && currentChapterIndex >= chapters.length} className="bg-white p-6 rounded-lg shadow-md">
+        <details open={currentStep === 2 && currentChapterIndex >= chapters.length} className="bg-white p-6 rounded-lg shadow-md">
           <summary className="cursor-pointer font-medium text-blue-600 mb-2">Final Expanded Story</summary>
           <div
             className="prose max-w-none prose-headings:text-lg prose-headings:font-semibold prose-p:leading-relaxed"
