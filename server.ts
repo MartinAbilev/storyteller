@@ -155,10 +155,10 @@ app.post('/api/generate-outline', async (req, res) => {
 
 app.post('/api/expand-chapter', async (req, res) => {
   try {
-    const { condensedDraft, title, summary, model, customPrompt, chapterIndex, previousChapters } = req.body;
+    const { condensedDraft, title, summary, model, customPrompt, chapterIndex, previousChapters, totalChapters } = req.body;
     if (!title || !summary) return res.status(400).json({ error: 'Chapter title and summary required' });
 
-    console.log(`[Backend] Expanding chapter "${title}" (index: ${chapterIndex})`);
+    console.log(`[Backend] Expanding chapter "${title}" (index: ${chapterIndex}, total: ${totalChapters})`);
     // Build previous chapters context if chapterIndex > 0
     let previousContext = '';
     if (chapterIndex > 0 && previousChapters && Array.isArray(previousChapters)) {
@@ -172,10 +172,17 @@ app.post('/api/expand-chapter', async (req, res) => {
       previousContext = previousContext.substring(0, 1000 * chapterIndex);
     }
 
+    // Add finale instruction for the last chapter
+    const isFinalChapter = chapterIndex === totalChapters - 1;
+    const finaleInstruction = isFinalChapter
+      ? 'This is the final chapter. Conclude the story with a climactic, cohesive ending, resolving key plotlines and character arcs (e.g., Inquisitor Valeria’s mission, Captain Zorath’s fate) while maintaining the grimdark tone.'
+      : '';
+
     const expandPrompt = `
       Expand this chapter into a detailed, coherent narrative (800-1500 words).
       Use vivid, immersive language matching the original draft's style/tone. Ensure plot continuity.
       ${previousContext ? `${previousContext}\n` : ''}
+      ${finaleInstruction ? `${finaleInstruction}\n` : ''}
       ${customPrompt ? `Additional instructions: ${customPrompt}` : ''}
       Reference full context: ${condensedDraft.substring(0, 5000)}...
       Title: ${title}. Summary: ${summary}
@@ -191,10 +198,10 @@ app.post('/api/expand-chapter', async (req, res) => {
 
 app.post('/api/expand-chapter-more', async (req, res) => {
   try {
-    const { condensedDraft, title, summary, existingDetails, model, customPrompt, chapterIndex, previousChapters } = req.body;
+    const { condensedDraft, title, summary, existingDetails, model, customPrompt, chapterIndex, previousChapters, totalChapters } = req.body;
     if (!title || !summary || !existingDetails) return res.status(400).json({ error: 'Title, summary, and existing details required' });
 
-    console.log(`[Backend] Expanding chapter "${title}" further (index: ${chapterIndex})`);
+    console.log(`[Backend] Expanding chapter "${title}" further (index: ${chapterIndex}, total: ${totalChapters})`);
     // Build previous chapters context if chapterIndex > 0
     let previousContext = '';
     if (chapterIndex > 0 && previousChapters && Array.isArray(previousChapters)) {
@@ -208,10 +215,17 @@ app.post('/api/expand-chapter-more', async (req, res) => {
       previousContext = previousContext.substring(0, 1000 * chapterIndex);
     }
 
+    // Add finale instruction for the last chapter
+    const isFinalChapter = chapterIndex === totalChapters - 1;
+    const finaleInstruction = isFinalChapter
+      ? 'This is the final chapter. Conclude the story with a climactic, cohesive ending, resolving key plotlines and character arcs (e.g., Inquisitor Valeria’s mission, Captain Zorath’s fate) while maintaining the grimdark tone.'
+      : '';
+
     const expandMorePrompt = `
       Expand this existing chapter narrative by adding 500-1000 words, continuing the story seamlessly.
       Maintain the same style, tone, and plot continuity as the existing text.
       ${previousContext ? `${previousContext}\n` : ''}
+      ${finaleInstruction ? `${finaleInstruction}\n` : ''}
       ${customPrompt ? `Additional instructions: ${customPrompt}` : ''}
       Reference full context: ${condensedDraft.substring(0, 5000)}...
       Title: ${title}
@@ -229,5 +243,5 @@ app.post('/api/expand-chapter-more', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`[Backend] Running on http://localhost:${PORT} (OpenAI-only with previous chapter context)`);
+  console.log(`[Backend] Running on http://localhost:${PORT} (OpenAI-only with finale instruction)`);
 });

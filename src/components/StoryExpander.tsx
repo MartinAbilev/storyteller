@@ -198,6 +198,7 @@ const StoryExpander: React.FC = () => {
             customPrompt,
             chapterIndex: currentChapterIndex,
             previousChapters: chapters.slice(0, currentChapterIndex),
+            totalChapters: chapters.length,
           }),
         });
         if (!response.ok) {
@@ -267,6 +268,7 @@ const StoryExpander: React.FC = () => {
           customPrompt,
           chapterIndex,
           previousChapters: chapters.slice(0, chapterIndex),
+          totalChapters: chapters.length,
         }),
       });
       if (!response.ok) {
@@ -531,11 +533,11 @@ const StoryExpander: React.FC = () => {
                       </button>
                     </div>
                   ) : (
-                    <p className="text-sm text-gray-600 italic mb-2">Custom Prompt: {chapterPrompts[idx] || 'None'}</p>
+                    <p className="text-sm text-gray-600 italic mb-2">Custom Prompt: ${chapterPrompts[idx] || 'None'}</p>
                   )}
-                  <p className="text-sm text-gray-600 italic mb-2">Summary: {chapter.summary}</p>
+                  <p className="text-sm text-gray-600 italic mb-2">Summary: ${chapter.summary}</p>
                   <div className="prose max-w-none text-gray-700">
-                    <p>{expandedChapters[idx]}</p>
+                    <p>${expandedChapters[idx]}</p>
                   </div>
                 </div>
               )
