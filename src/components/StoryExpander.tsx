@@ -4,7 +4,8 @@ interface Chapter {
   title: string;
   summary: string;
   details?: string;
-  expansionCount?: number; // Track how many times expanded
+  expansionCount?: number;
+  customPrompt?: string; // Custom prompt for chapter
 }
 
 const LOCAL_STORAGE_KEY = 'storyExpanderProgress';
@@ -17,13 +18,17 @@ const StoryExpander: React.FC = () => {
   const [error, setError] = useState<string>('');
   const [rawError, setRawError] = useState<string>('');
   const [condensedDraft, setCondensedDraft] = useState<string>('');
+  const [summaryPrompt, setSummaryPrompt] = useState<string>(''); // Prompt for summarization
+  const [editingSummaryPrompt, setEditingSummaryPrompt] = useState<boolean>(false);
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [expandedChapters, setExpandedChapters] = useState<string[]>([]);
-  const [expansionCounts, setExpansionCounts] = useState<number[]>([]); // Per-chapter expansion count
+  const [expansionCounts, setExpansionCounts] = useState<number[]>([]);
+  const [chapterPrompts, setChapterPrompts] = useState<string[]>([]); // Per-chapter prompts
+  const [editingChapterPrompt, setEditingChapterPrompt] = useState<number | null>(null);
   const [currentStep, setCurrentStep] = useState<number>(0);
   const [currentChapterIndex, setCurrentChapterIndex] = useState<number>(0);
   const [draftHash, setDraftHash] = useState<string>('');
-  const [chapterLoading, setChapterLoading] = useState<number | null>(null); // Track which chapter is expanding
+  const [chapterLoading, setChapterLoading] = useState<number | null>(null);
 
   const totalSteps = 3 + (chapters.length || 6) + expansionCounts.reduce((sum, count) => sum + count, 0);
   const completedSteps = currentStep + (currentStep === 2 ? currentChapterIndex : 0) + expansionCounts.reduce((sum, count) => sum + count, 0);
@@ -45,9 +50,11 @@ const StoryExpander: React.FC = () => {
         const currentHash = await hashDraft(draft);
         if (progress.draftHash === currentHash) {
           setCondensedDraft(progress.condensedDraft || '');
+          setSummaryPrompt(progress.summaryPrompt || '');
           setChapters(progress.chapters || []);
           setExpandedChapters(progress.expandedChapters || []);
           setExpansionCounts(progress.expansionCounts || []);
+          setChapterPrompts(progress.chapterPrompts || []);
           setCurrentStep(progress.currentStep || 0);
           setCurrentChapterIndex(progress.currentChapterIndex || 0);
           setDraftHash(currentHash);
@@ -64,9 +71,11 @@ const StoryExpander: React.FC = () => {
     const progress = {
       draftHash,
       condensedDraft,
+      summaryPrompt,
       chapters,
       expandedChapters,
       expansionCounts,
+      chapterPrompts,
       currentStep,
       currentChapterIndex,
     };
@@ -76,9 +85,11 @@ const StoryExpander: React.FC = () => {
   const clearProgress = () => {
     localStorage.removeItem(LOCAL_STORAGE_KEY);
     setCondensedDraft('');
+    setSummaryPrompt('');
     setChapters([]);
     setExpandedChapters([]);
     setExpansionCounts([]);
+    setChapterPrompts([]);
     setCurrentStep(0);
     setCurrentChapterIndex(0);
     setStatus('Progress cleared—start over.');
@@ -96,7 +107,7 @@ const StoryExpander: React.FC = () => {
         const response = await fetch('/api/summarize-draft', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ draft, useClaude }),
+          body: JSON.stringify({ draft, useClaude, customPrompt: summaryPrompt }),
         });
         if (!response.ok) {
           const errData = await response.json();
@@ -122,12 +133,14 @@ const StoryExpander: React.FC = () => {
         setChapters(data.chapters);
         setExpandedChapters(new Array(data.chapters.length).fill(''));
         setExpansionCounts(new Array(data.chapters.length).fill(0));
+        setChapterPrompts(new Array(data.chapters.length).fill(''));
         setCurrentStep(2);
         setCurrentChapterIndex(0);
         setStatus('Step 2 complete: Outline generated (see below).');
         saveProgress();
       } else if (currentStep === 2 && currentChapterIndex < chapters.length) {
         const chapter = chapters[currentChapterIndex];
+        const customPrompt = chapterPrompts[currentChapterIndex] || '';
         setStatus(`Step 3: Expanding chapter ${currentChapterIndex + 1}/${chapters.length} ("${chapter.title}")...`);
         setChapterLoading(currentChapterIndex);
         const response = await fetch('/api/expand-chapter', {
@@ -138,6 +151,7 @@ const StoryExpander: React.FC = () => {
             title: chapter.title,
             summary: chapter.summary,
             useClaude,
+            customPrompt,
           }),
         });
         if (!response.ok) {
@@ -193,6 +207,7 @@ const StoryExpander: React.FC = () => {
     setRawError('');
     try {
       const chapter = chapters[chapterIndex];
+      const customPrompt = chapterPrompts[chapterIndex] || '';
       setStatus(`Expanding chapter ${chapterIndex + 1} ("${chapter.title}") further...`);
       const response = await fetch('/api/expand-chapter-more', {
         method: 'POST',
@@ -203,6 +218,7 @@ const StoryExpander: React.FC = () => {
           summary: chapter.summary,
           existingDetails: expandedChapters[chapterIndex],
           useClaude,
+          customPrompt,
         }),
       });
       if (!response.ok) {
@@ -224,6 +240,30 @@ const StoryExpander: React.FC = () => {
     } finally {
       setChapterLoading(null);
     }
+  };
+
+  const handleEditSummaryPrompt = () => {
+    setEditingSummaryPrompt(true);
+  };
+
+  const handleSaveSummaryPrompt = () => {
+    setEditingSummaryPrompt(false);
+    if (currentStep > 0) {
+      setStatus('Summary prompt updated—clear progress to re-summarize.');
+    }
+    saveProgress();
+  };
+
+  const handleEditChapterPrompt = (index: number) => {
+    setEditingChapterPrompt(index);
+  };
+
+  const handleSaveChapterPrompt = (index: number) => {
+    setEditingChapterPrompt(null);
+    if (expandedChapters[index]) {
+      setStatus(`Prompt for chapter ${index + 1} updated—use "Expand More" to apply.`);
+    }
+    saveProgress();
   };
 
   useEffect(() => {
@@ -300,6 +340,34 @@ const StoryExpander: React.FC = () => {
       {condensedDraft && (
         <details open={currentStep === 1} className="bg-white p-6 rounded-lg shadow-md">
           <summary className="cursor-pointer font-medium text-blue-600 mb-2">Step 1: Condensed Draft</summary>
+          <div className="flex justify-between items-center mb-2">
+            <h3 className="font-semibold text-gray-800">Custom Prompt</h3>
+            {!editingSummaryPrompt && (
+              <button onClick={handleEditSummaryPrompt} className="text-blue-600 hover:text-blue-800">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                </svg>
+              </button>
+            )}
+          </div>
+          {editingSummaryPrompt ? (
+            <div className="mb-4">
+              <textarea
+                value={summaryPrompt}
+                onChange={(e) => setSummaryPrompt(e.target.value)}
+                placeholder="Enter custom prompt for summarization (e.g., 'Emphasize grimdark themes, make character A heroic')"
+                className="w-full p-2 border border-gray-300 rounded-md"
+              />
+              <button
+                onClick={handleSaveSummaryPrompt}
+                className="mt-2 px-4 py-1 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+              >
+                Save Prompt
+              </button>
+            </div>
+          ) : (
+            <p className="text-sm text-gray-600 mb-4">{summaryPrompt || 'No custom prompt set'}</p>
+          )}
           <div className="prose max-w-none text-gray-700">
             <p>{condensedDraft}</p>
           </div>
@@ -312,7 +380,36 @@ const StoryExpander: React.FC = () => {
           <ul className="space-y-4 mt-4">
             {chapters.map((chapter, idx) => (
               <li key={idx} className="border-l-4 border-blue-500 pl-4">
-                <h3 className="font-semibold text-gray-800">{chapter.title}</h3>
+                <div className="flex justify-between items-center">
+                  <h3 className="font-semibold text-gray-800">{chapter.title}</h3>
+                  <button onClick={() => handleEditChapterPrompt(idx)} className="text-blue-600 hover:text-blue-800">
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                    </svg>
+                  </button>
+                </div>
+                {editingChapterPrompt === idx ? (
+                  <div className="mb-4">
+                    <textarea
+                      value={chapterPrompts[idx] || ''}
+                      onChange={(e) => {
+                        const newPrompts = [...chapterPrompts];
+                        newPrompts[idx] = e.target.value;
+                        setChapterPrompts(newPrompts);
+                      }}
+                      placeholder="Enter custom prompt for this chapter (e.g., 'Make character A the villain, focus on betrayal')"
+                      className="w-full p-2 border border-gray-300 rounded-md"
+                    />
+                    <button
+                      onClick={() => handleSaveChapterPrompt(idx)}
+                      className="mt-2 px-4 py-1 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+                    >
+                      Save Prompt
+                    </button>
+                  </div>
+                ) : (
+                  <p className="text-sm text-gray-600 italic mb-2">Custom Prompt: {chapterPrompts[idx] || 'None'}</p>
+                )}
                 <p className="text-sm text-gray-600 italic">Summary: {chapter.summary}</p>
               </li>
             ))}
@@ -329,14 +426,43 @@ const StoryExpander: React.FC = () => {
                 <div key={idx} className="border-l-4 border-blue-500 pl-4">
                   <div className="flex justify-between items-center">
                     <h3 className="font-semibold text-gray-800">{chapter.title} {expansionCounts[idx] > 0 && ` (Expanded ${expansionCounts[idx]}x)`}</h3>
-                    <button
-                      onClick={() => handleExpandMore(idx)}
-                      disabled={chapterLoading !== null}
-                      className="px-4 py-1 bg-purple-600 text-white rounded-md hover:bg-purple-700 disabled:opacity-50"
-                    >
-                      {chapterLoading === idx ? 'Expanding...' : 'Expand More'}
-                    </button>
+                    <div className="flex space-x-2">
+                      <button onClick={() => handleEditChapterPrompt(idx)} className="text-blue-600 hover:text-blue-800">
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                        </svg>
+                      </button>
+                      <button
+                        onClick={() => handleExpandMore(idx)}
+                        disabled={chapterLoading !== null}
+                        className="px-4 py-1 bg-purple-600 text-white rounded-md hover:bg-purple-700 disabled:opacity-50"
+                      >
+                        {chapterLoading === idx ? 'Expanding...' : 'Expand More'}
+                      </button>
+                    </div>
                   </div>
+                  {editingChapterPrompt === idx ? (
+                    <div className="mb-4">
+                      <textarea
+                        value={chapterPrompts[idx] || ''}
+                        onChange={(e) => {
+                          const newPrompts = [...chapterPrompts];
+                          newPrompts[idx] = e.target.value;
+                          setChapterPrompts(newPrompts);
+                        }}
+                        placeholder="Enter custom prompt for this chapter (e.g., 'Make character A the villain, focus on betrayal')"
+                        className="w-full p-2 border border-gray-300 rounded-md"
+                      />
+                      <button
+                        onClick={() => handleSaveChapterPrompt(idx)}
+                        className="mt-2 px-4 py-1 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+                      >
+                        Save Prompt
+                      </button>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-gray-600 italic mb-2">Custom Prompt: {chapterPrompts[idx] || 'None'}</p>
+                  )}
                   <p className="text-sm text-gray-600 italic mb-2">Summary: {chapter.summary}</p>
                   <div className="prose max-w-none text-gray-700">
                     <p>{expandedChapters[idx]}</p>

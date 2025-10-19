@@ -74,7 +74,7 @@ const generateWithModel = async (prompt: string, useClaude = false, retries = 3)
 
 app.post('/api/summarize-draft', async (req, res) => {
   try {
-    const { draft, useClaude } = req.body;
+    const { draft, useClaude, customPrompt } = req.body;
     if (!draft) return res.status(400).json({ error: 'Draft required' });
 
     const chunks = chunkText(draft);
@@ -84,6 +84,7 @@ app.post('/api/summarize-draft', async (req, res) => {
       console.log(`[Backend] Processing chunk ${i + 1}/${chunks.length} (~${estimateTokens(chunks[i])} tokens)`);
       const summarizePrompt = `
         Summarize this story chunk concisely (200-400 words), preserving key plot, characters, tone, and details. Focus on narrative flow.
+        ${customPrompt ? `Additional instructions: ${customPrompt}` : ''}
         Chunk ${i + 1}/${chunks.length}: ${chunks[i]}
       `;
       const summary = await generateWithModel(summarizePrompt, useClaude);
@@ -132,13 +133,14 @@ app.post('/api/generate-outline', async (req, res) => {
 
 app.post('/api/expand-chapter', async (req, res) => {
   try {
-    const { condensedDraft, title, summary, useClaude } = req.body;
+    const { condensedDraft, title, summary, useClaude, customPrompt } = req.body;
     if (!title || !summary) return res.status(400).json({ error: 'Chapter title and summary required' });
 
     console.log(`[Backend] Expanding chapter "${title}"`);
     const expandPrompt = `
       Expand this chapter into a detailed, coherent narrative (800-1500 words).
       Use vivid, immersive language matching the original draft's style/tone. Ensure plot continuity.
+      ${customPrompt ? `Additional instructions: ${customPrompt}` : ''}
       Reference full context: ${condensedDraft.substring(0, 5000)}...
       Title: ${title}. Summary: ${summary}
     `;
@@ -153,13 +155,14 @@ app.post('/api/expand-chapter', async (req, res) => {
 
 app.post('/api/expand-chapter-more', async (req, res) => {
   try {
-    const { condensedDraft, title, summary, existingDetails, useClaude } = req.body;
+    const { condensedDraft, title, summary, existingDetails, useClaude, customPrompt } = req.body;
     if (!title || !summary || !existingDetails) return res.status(400).json({ error: 'Title, summary, and existing details required' });
 
     console.log(`[Backend] Expanding chapter "${title}" further`);
     const expandMorePrompt = `
       Expand this existing chapter narrative by adding 500-1000 words, continuing the story seamlessly.
       Maintain the same style, tone, and plot continuity as the existing text.
+      ${customPrompt ? `Additional instructions: ${customPrompt}` : ''}
       Reference full context: ${condensedDraft.substring(0, 5000)}...
       Title: ${title}
       Summary: ${summary}
@@ -176,5 +179,5 @@ app.post('/api/expand-chapter-more', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`[Backend] Running on http://localhost:${PORT} (with recursive expansion)`);
+  console.log(`[Backend] Running on http://localhost:${PORT} (with custom prompts)`);
 });
