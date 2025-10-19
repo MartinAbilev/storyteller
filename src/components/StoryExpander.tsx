@@ -12,13 +12,13 @@ const LOCAL_STORAGE_KEY = 'storyExpanderProgress';
 
 const StoryExpander: React.FC = () => {
   const [draft, setDraft] = useState<string>('');
-  const [useClaude, setUseClaude] = useState<boolean>(false);
+  const [model, setModel] = useState<string>('gpt-5'); // Default to GPT-5
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [status, setStatus] = useState<string>('');
   const [error, setError] = useState<string>('');
   const [rawError, setRawError] = useState<string>('');
   const [condensedDraft, setCondensedDraft] = useState<string>('');
-  const [summaryPrompt, setSummaryPrompt] = useState<string>(''); // Prompt for summarization
+  const [summaryPrompt, setSummaryPrompt] = useState<string>('');
   const [editingSummaryPrompt, setEditingSummaryPrompt] = useState<boolean>(false);
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [expandedChapters, setExpandedChapters] = useState<string[]>([]);
@@ -29,6 +29,15 @@ const StoryExpander: React.FC = () => {
   const [currentChapterIndex, setCurrentChapterIndex] = useState<number>(0);
   const [draftHash, setDraftHash] = useState<string>('');
   const [chapterLoading, setChapterLoading] = useState<number | null>(null);
+
+  // Model options
+  const modelOptions = [
+    { value: 'gpt-4o-mini', label: 'GPT-4o-mini (Fast & Cheap)' },
+    { value: 'gpt-4o', label: 'GPT-4o (Balanced)' },
+    { value: 'gpt-5', label: 'GPT-5 (PhD-Level, Powerful - Default)' },
+    { value: 'gpt-5-mini', label: 'GPT-5-mini (Efficient)' },
+    { value: 'claude-3-5-sonnet-20240620', label: 'Claude 3.5 Sonnet (Long Context)' },
+  ];
 
   const totalSteps = 3 + (chapters.length || 6) + expansionCounts.reduce((sum, count) => sum + count, 0);
   const completedSteps = currentStep + (currentStep === 2 ? currentChapterIndex : 0) + expansionCounts.reduce((sum, count) => sum + count, 0);
@@ -58,6 +67,7 @@ const StoryExpander: React.FC = () => {
           setCurrentStep(progress.currentStep || 0);
           setCurrentChapterIndex(progress.currentChapterIndex || 0);
           setDraftHash(currentHash);
+          setModel(progress.model || 'gpt-5'); // Load saved model
           setStatus('Loaded saved progress—click Continue or inspect results.');
         } else {
           setStatus('Draft changed—clear progress or start fresh.');
@@ -78,6 +88,7 @@ const StoryExpander: React.FC = () => {
       chapterPrompts,
       currentStep,
       currentChapterIndex,
+      model, // Save selected model
     };
     localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(progress));
   };
@@ -107,7 +118,7 @@ const StoryExpander: React.FC = () => {
       const response = await fetch('/api/summarize-draft', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ draft, useClaude, customPrompt: summaryPrompt }),
+        body: JSON.stringify({ draft, model, customPrompt: summaryPrompt }),
       });
       if (!response.ok) {
         const errData = await response.json();
@@ -141,7 +152,7 @@ const StoryExpander: React.FC = () => {
         const response = await fetch('/api/summarize-draft', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ draft, useClaude, customPrompt: summaryPrompt }),
+          body: JSON.stringify({ draft, model, customPrompt: summaryPrompt }),
         });
         if (!response.ok) {
           const errData = await response.json();
@@ -157,7 +168,7 @@ const StoryExpander: React.FC = () => {
         const response = await fetch('/api/generate-outline', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ condensedDraft, useClaude, customPrompt: summaryPrompt }),
+          body: JSON.stringify({ condensedDraft, model, customPrompt: summaryPrompt }),
         });
         if (!response.ok) {
           const errData = await response.json();
@@ -184,7 +195,7 @@ const StoryExpander: React.FC = () => {
             condensedDraft,
             title: chapter.title,
             summary: chapter.summary,
-            useClaude,
+            model,
             customPrompt,
           }),
         });
@@ -251,7 +262,7 @@ const StoryExpander: React.FC = () => {
           title: chapter.title,
           summary: chapter.summary,
           existingDetails: expandedChapters[chapterIndex],
-          useClaude,
+          model,
           customPrompt,
         }),
       });
@@ -324,8 +335,19 @@ const StoryExpander: React.FC = () => {
           required
         />
         <div className="mt-4 flex items-center space-x-2">
-          <input type="checkbox" id="useClaude" checked={useClaude} onChange={(e) => setUseClaude(e.target.checked)} className="rounded" />
-          <label htmlFor="useClaude" className="text-sm text-gray-600">Use Claude 3.5 (better for long drafts)</label>
+          <label htmlFor="model" className="text-sm text-gray-600">Select Model:</label>
+          <select
+            id="model"
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            className="border border-gray-300 rounded-md px-3 py-1 text-sm"
+          >
+            {modelOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
         </div>
         <div className="mt-4 flex space-x-4">
           <button

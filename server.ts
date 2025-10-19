@@ -41,12 +41,14 @@ const cleanJsonResponse = (text: string): string => {
     .replace(/,\s*([\]\}])/g, '$1');
 };
 
-const generateWithModel = async (prompt: string, useClaude = false, retries = 3): Promise<string> => {
-  console.log(`[Backend] Generating with ${useClaude && anthropic ? 'Claude' : 'OpenAI'} (prompt length: ${prompt.length} chars, retries left: ${retries})`);
+const generateWithModel = async (prompt: string, model: string, retries = 3): Promise<string> => {
+  const useClaude = model.startsWith('claude-');
+  const modelId = useClaude ? model : model; // modelId is the full string
+  console.log(`[Backend] Generating with ${useClaude ? 'Claude' : 'OpenAI'} model "${modelId}" (prompt length: ${prompt.length} chars, retries left: ${retries})`);
   try {
     // if (useClaude && anthropic) {
     //   const response = await anthropic.createChatCompletion({
-    //     model: 'claude-3-5-sonnet-20240620',
+    //     model: modelId,
     //     messages: [{ role: 'user', content: prompt }],
     //     max_tokens: 4000,
     //   });
@@ -55,7 +57,7 @@ const generateWithModel = async (prompt: string, useClaude = false, retries = 3)
     //   return output;
     // }
     const completion = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: modelId,
       messages: [{ role: 'user', content: prompt }],
       max_tokens: 4000,
     });
@@ -66,7 +68,7 @@ const generateWithModel = async (prompt: string, useClaude = false, retries = 3)
     console.error(`[Backend] Generation error: ${error.message || error}`);
     if (retries > 0) {
       console.log(`[Backend] Retrying... (${retries - 1} left)`);
-      return generateWithModel(prompt, useClaude, retries - 1);
+      return generateWithModel(prompt, model, retries - 1);
     }
     throw error;
   }
@@ -74,7 +76,7 @@ const generateWithModel = async (prompt: string, useClaude = false, retries = 3)
 
 app.post('/api/summarize-draft', async (req, res) => {
   try {
-    const { draft, useClaude, customPrompt } = req.body;
+    const { draft, model, customPrompt } = req.body;
     if (!draft) return res.status(400).json({ error: 'Draft required' });
 
     const chunks = chunkText(draft);
@@ -87,7 +89,7 @@ app.post('/api/summarize-draft', async (req, res) => {
         ${customPrompt ? `Additional instructions: ${customPrompt}` : ''}
         Chunk ${i + 1}/${chunks.length}: ${chunks[i]}
       `;
-      const summary = await generateWithModel(summarizePrompt, useClaude);
+      const summary = await generateWithModel(summarizePrompt, model);
       condensedDraft += summary + ' ';
     }
     console.log(`[Backend] Condensed draft complete: ${condensedDraft.slice(0, 200)}... (~${estimateTokens(condensedDraft)} tokens)`);
@@ -100,7 +102,7 @@ app.post('/api/summarize-draft', async (req, res) => {
 
 app.post('/api/generate-outline', async (req, res) => {
   try {
-    const { condensedDraft, useClaude, customPrompt } = req.body;
+    const { condensedDraft, model, customPrompt } = req.body;
     if (!condensedDraft) return res.status(400).json({ error: 'Condensed draft required' });
 
     console.log(`[Backend] Generating outline (~${estimateTokens(condensedDraft)} tokens)`);
@@ -112,7 +114,7 @@ app.post('/api/generate-outline', async (req, res) => {
       Ensure the response is strictly JSON, with no Markdown, code fences, or extra text.
       Condensed Draft: ${condensedDraft.substring(0, 10000)}... (trimmed)
     `;
-    const outlineText = await generateWithModel(outlinePrompt, useClaude);
+    const outlineText = await generateWithModel(outlinePrompt, model);
     const cleanedText = cleanJsonResponse(outlineText);
     let chapters;
     try {
@@ -134,7 +136,7 @@ app.post('/api/generate-outline', async (req, res) => {
 
 app.post('/api/expand-chapter', async (req, res) => {
   try {
-    const { condensedDraft, title, summary, useClaude, customPrompt } = req.body;
+    const { condensedDraft, title, summary, model, customPrompt } = req.body;
     if (!title || !summary) return res.status(400).json({ error: 'Chapter title and summary required' });
 
     console.log(`[Backend] Expanding chapter "${title}"`);
@@ -145,7 +147,7 @@ app.post('/api/expand-chapter', async (req, res) => {
       Reference full context: ${condensedDraft.substring(0, 5000)}...
       Title: ${title}. Summary: ${summary}
     `;
-    const details = await generateWithModel(expandPrompt, useClaude);
+    const details = await generateWithModel(expandPrompt, model);
     console.log(`[Backend] Expanded chapter "${title}": ${details.slice(0, 200)}...`);
     res.json({ details });
   } catch (error: any) {
@@ -156,7 +158,7 @@ app.post('/api/expand-chapter', async (req, res) => {
 
 app.post('/api/expand-chapter-more', async (req, res) => {
   try {
-    const { condensedDraft, title, summary, existingDetails, useClaude, customPrompt } = req.body;
+    const { condensedDraft, title, summary, existingDetails, model, customPrompt } = req.body;
     if (!title || !summary || !existingDetails) return res.status(400).json({ error: 'Title, summary, and existing details required' });
 
     console.log(`[Backend] Expanding chapter "${title}" further`);
@@ -169,7 +171,7 @@ app.post('/api/expand-chapter-more', async (req, res) => {
       Summary: ${summary}
       Existing Narrative: ${existingDetails.substring(0, 10000)}... (trimmed)
     `;
-    const additionalDetails = await generateWithModel(expandMorePrompt, useClaude);
+    const additionalDetails = await generateWithModel(expandMorePrompt, model);
     const updatedDetails = existingDetails + '\n\n' + additionalDetails;
     console.log(`[Backend] Further expanded chapter "${title}": ${updatedDetails.slice(0, 200)}...`);
     res.json({ details: updatedDetails });
@@ -180,5 +182,5 @@ app.post('/api/expand-chapter-more', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`[Backend] Running on http://localhost:${PORT} (with summary prompt propagation)`);
+  console.log(`[Backend] Running on http://localhost:${PORT} (with model selector)`);
 });
