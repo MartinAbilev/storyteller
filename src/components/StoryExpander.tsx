@@ -36,7 +36,6 @@ const StoryExpander: React.FC = () => {
     { value: 'gpt-4o', label: 'GPT-4o (Balanced)' },
     { value: 'gpt-5', label: 'GPT-5 (PhD-Level, Powerful - Default)' },
     { value: 'gpt-5-mini', label: 'GPT-5-mini (Efficient)' },
-    { value: 'claude-3-5-sonnet-20240620', label: 'Claude 3.5 Sonnet (Long Context)' },
   ];
 
   const totalSteps = 3 + (chapters.length || 6) + expansionCounts.reduce((sum, count) => sum + count, 0);
@@ -88,7 +87,7 @@ const StoryExpander: React.FC = () => {
       chapterPrompts,
       currentStep,
       currentChapterIndex,
-      model, // Save selected model
+      model,
     };
     localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(progress));
   };
@@ -197,6 +196,8 @@ const StoryExpander: React.FC = () => {
             summary: chapter.summary,
             model,
             customPrompt,
+            chapterIndex: currentChapterIndex,
+            previousChapters: chapters.slice(0, currentChapterIndex),
           }),
         });
         if (!response.ok) {
@@ -264,6 +265,8 @@ const StoryExpander: React.FC = () => {
           existingDetails: expandedChapters[chapterIndex],
           model,
           customPrompt,
+          chapterIndex,
+          previousChapters: chapters.slice(0, chapterIndex),
         }),
       });
       if (!response.ok) {
