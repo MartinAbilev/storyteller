@@ -14,19 +14,18 @@ const StoryExpander: React.FC = () => {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [status, setStatus] = useState<string>('');
   const [error, setError] = useState<string>('');
+  const [rawError, setRawError] = useState<string>(''); // For raw API response
   const [condensedDraft, setCondensedDraft] = useState<string>('');
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [expandedChapters, setExpandedChapters] = useState<string[]>([]);
-  const [currentStep, setCurrentStep] = useState<number>(0); // 0: idle/summarize, 1: outline, 2: expand
+  const [currentStep, setCurrentStep] = useState<number>(0);
   const [currentChapterIndex, setCurrentChapterIndex] = useState<number>(0);
   const [draftHash, setDraftHash] = useState<string>('');
 
-  // Progress bar: 3 main steps + chapters
-  const totalSteps = 3 + (chapters.length || 6); // Estimate 6 if no chapters yet
+  const totalSteps = 3 + (chapters.length || 6);
   const completedSteps = currentStep + (currentStep === 2 ? currentChapterIndex : 0);
   const progressPercent = ((completedSteps / totalSteps) * 100).toFixed(1);
 
-  // Hash draft
   const hashDraft = async (text: string): Promise<string> => {
     const encoder = new TextEncoder();
     const data = encoder.encode(text);
@@ -35,7 +34,6 @@ const StoryExpander: React.FC = () => {
     return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
   };
 
-  // Load progress
   useEffect(() => {
     const loadProgress = async () => {
       const stored = localStorage.getItem(LOCAL_STORAGE_KEY);
@@ -48,16 +46,16 @@ const StoryExpander: React.FC = () => {
           setExpandedChapters(progress.expandedChapters || []);
           setCurrentStep(progress.currentStep || 0);
           setCurrentChapterIndex(progress.currentChapterIndex || 0);
-          setStatus('Loaded saved progress—resume or inspect results.');
+          setDraftHash(currentHash);
+          setStatus('Loaded saved progress—click Continue or inspect results.');
         } else {
-          setStatus('Draft changed—starting fresh.');
+          setStatus('Draft changed—clear progress or start fresh.');
         }
       }
     };
     loadProgress();
   }, [draft]);
 
-  // Save progress
   const saveProgress = () => {
     const progress = {
       draftHash,
@@ -70,7 +68,6 @@ const StoryExpander: React.FC = () => {
     localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(progress));
   };
 
-  // Clear progress
   const clearProgress = () => {
     localStorage.removeItem(LOCAL_STORAGE_KEY);
     setCondensedDraft('');
@@ -79,11 +76,14 @@ const StoryExpander: React.FC = () => {
     setCurrentStep(0);
     setCurrentChapterIndex(0);
     setStatus('Progress cleared—start over.');
+    setError('');
+    setRawError('');
   };
 
   const processStep = async () => {
     setIsLoading(true);
     setError('');
+    setRawError('');
     try {
       if (currentStep === 0) {
         setStatus('Step 1: Summarizing draft chunks...');
@@ -92,7 +92,10 @@ const StoryExpander: React.FC = () => {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ draft, useClaude }),
         });
-        if (!response.ok) throw new Error('Summarize failed');
+        if (!response.ok) {
+          const errData = await response.json();
+          throw new Error(errData.error || 'Summarize failed');
+        }
         const data = await response.json();
         setCondensedDraft(data.condensedDraft);
         setCurrentStep(1);
@@ -105,7 +108,10 @@ const StoryExpander: React.FC = () => {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ condensedDraft, useClaude }),
         });
-        if (!response.ok) throw new Error('Outline failed');
+        if (!response.ok) {
+          const errData = await response.json();
+          throw Object.assign(new Error(errData.error || 'Outline failed'), { rawResponse: errData.rawResponse || '' });
+        }
         const data = await response.json();
         setChapters(data.chapters);
         setExpandedChapters(new Array(data.chapters.length).fill(''));
@@ -126,7 +132,10 @@ const StoryExpander: React.FC = () => {
             useClaude,
           }),
         });
-        if (!response.ok) throw new Error(`Expansion for chapter ${currentChapterIndex + 1} failed`);
+        if (!response.ok) {
+          const errData = await response.json();
+          throw new Error(errData.error || `Expansion for chapter ${currentChapterIndex + 1} failed`);
+        }
         const data = await response.json();
         const newExpanded = [...expandedChapters];
         newExpanded[currentChapterIndex] = data.details;
@@ -139,7 +148,8 @@ const StoryExpander: React.FC = () => {
         }
       }
     } catch (err) {
-      setError((err as Error).message || 'Step failed—retry this step.');
+      setError(`Step failed: ${err.message || 'Unknown error'}. Click Continue to retry.`);
+      setRawError(err.rawResponse || '');
     } finally {
       setIsLoading(false);
     }
@@ -147,19 +157,34 @@ const StoryExpander: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!draft.trim()) return;
+    if (!draft.trim()) {
+      setError('Draft cannot be empty.');
+      return;
+    }
     const newHash = await hashDraft(draft);
     setDraftHash(newHash);
+    if (currentStep === 0 && !condensedDraft) {
+      setStatus('Starting fresh: Summarizing draft...');
+      processStep();
+    } else {
+      setStatus('Resuming from saved progress...');
+      processStep();
+    }
+  };
+
+  const handleContinue = () => {
+    if (isLoading) return;
     processStep();
   };
 
-  // Auto-process next step
   useEffect(() => {
-    if (isLoading || currentStep < 2 || currentChapterIndex >= chapters.length) return;
-    processStep();
-  }, [currentChapterIndex]);
+    console.log(`[Frontend] useEffect triggered: step=${currentStep}, chapterIndex=${currentChapterIndex}, chapters=${chapters.length}, loading=${isLoading}`);
+    if (isLoading || (currentStep === 2 && currentChapterIndex >= chapters.length)) return;
+    if (currentStep > 0 || condensedDraft) {
+      processStep();
+    }
+  }, [currentStep, currentChapterIndex, chapters.length, condensedDraft]);
 
-  // Full story
   const fullStory = chapters.map((ch, idx) => `### ${ch.title}\n\n${expandedChapters[idx] || '(Pending)'}\n\n---`).join('\n');
 
   return (
@@ -189,6 +214,14 @@ const StoryExpander: React.FC = () => {
           </button>
           <button
             type="button"
+            onClick={handleContinue}
+            disabled={isLoading || (currentStep === 2 && currentChapterIndex >= chapters.length)}
+            className="px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50"
+          >
+            Continue
+          </button>
+          <button
+            type="button"
             onClick={clearProgress}
             className="px-6 py-2 bg-red-600 text-white rounded-md hover:bg-red-700"
           >
@@ -197,18 +230,26 @@ const StoryExpander: React.FC = () => {
         </div>
       </form>
 
-      {/* Progress Bar */}
       <div className="bg-gray-200 rounded-full h-4">
         <div className="bg-blue-600 h-4 rounded-full" style={{ width: `${progressPercent}%` }}></div>
       </div>
       <p className="text-sm text-gray-600">Progress: {completedSteps}/{totalSteps} steps ({progressPercent}%)</p>
 
       {status && <div className="bg-blue-100 border border-blue-400 text-blue-700 px-4 py-3 rounded">{status}</div>}
-      {error && <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded">Error: {error}</div>}
+      {error && (
+        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded">
+          <p>{error}</p>
+          {rawError && (
+            <details className="mt-2">
+              <summary className="cursor-pointer text-sm">Raw Error Response</summary>
+              <pre className="text-xs bg-gray-100 p-2 rounded mt-1">{rawError}</pre>
+            </details>
+          )}
+        </div>
+      )}
 
-      {/* Step 1: Condensed Draft */}
       {condensedDraft && (
-        <details className="bg-white p-6 rounded-lg shadow-md">
+        <details open={currentStep === 1} className="bg-white p-6 rounded-lg shadow-md">
           <summary className="cursor-pointer font-medium text-blue-600 mb-2">Step 1: Condensed Draft</summary>
           <div className="prose max-w-none text-gray-700">
             <p>{condensedDraft}</p>
@@ -216,9 +257,8 @@ const StoryExpander: React.FC = () => {
         </details>
       )}
 
-      {/* Step 2: Chapter Outlines */}
       {chapters.length > 0 && (
-        <details className="bg-white p-6 rounded-lg shadow-md">
+        <details open={currentStep === 2} className="bg-white p-6 rounded-lg shadow-md">
           <summary className="cursor-pointer font-medium text-blue-600 mb-2">Step 2: Chapter Outlines</summary>
           <ul className="space-y-4 mt-4">
             {chapters.map((chapter, idx) => (
@@ -231,9 +271,8 @@ const StoryExpander: React.FC = () => {
         </details>
       )}
 
-      {/* Step 3: Expanded Chapters */}
       {expandedChapters.some(ch => ch) && (
-        <details className="bg-white p-6 rounded-lg shadow-md">
+        <details open={currentStep === 2} className="bg-white p-6 rounded-lg shadow-md">
           <summary className="cursor-pointer font-medium text-blue-600 mb-2">Step 3: Expanded Chapters</summary>
           <div className="space-y-6">
             {chapters.map((chapter, idx) => (
@@ -251,9 +290,8 @@ const StoryExpander: React.FC = () => {
         </details>
       )}
 
-      {/* Final Story */}
       {fullStory && chapters.some((_, idx) => expandedChapters[idx]) && (
-        <details className="bg-white p-6 rounded-lg shadow-md">
+        <details open={currentStep === 2 && currentChapterIndex >= chapters.length} className="bg-white p-6 rounded-lg shadow-md">
           <summary className="cursor-pointer font-medium text-blue-600 mb-2">Final Expanded Story</summary>
           <div
             className="prose max-w-none prose-headings:text-lg prose-headings:font-semibold prose-p:leading-relaxed"

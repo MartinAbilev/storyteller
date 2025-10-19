@@ -33,26 +33,44 @@ const chunkText = (text: string, maxWords = 5000): string[] => {
   return chunks;
 };
 
-const generateWithModel = async (prompt: string, useClaude = false): Promise<string> => {
-  console.log(`Generating with ${useClaude && anthropic ? 'Claude' : 'OpenAI'}...`);
-  // if (useClaude && anthropic) {
-  //   const response = await anthropic.createChatCompletion({
-  //     model: 'claude-3-5-sonnet-20240620',
-  //     messages: [{ role: 'user', content: prompt }],
-  //     max_tokens: 4000,
-  //   });
-  //   const output = response.choices[0]?.message?.content || '';
-  //   console.log(`Claude output: ${output.slice(0, 200)}...`);
-  //   return output;
-  // }
-  const completion = await openai.chat.completions.create({
-    model: 'gpt-4o-mini',
-    messages: [{ role: 'user', content: prompt }],
-    max_tokens: 4000,
-  });
-  const output = completion.choices[0]?.message?.content || '';
-  console.log(`OpenAI output: ${output.slice(0, 200)}...`);
-  return output;
+const cleanJsonResponse = (text: string): string => {
+  // Strip Markdown code fences and other common issues
+  return text
+    .replace(/^```json\s*\n?/, '') // Remove ```json
+    .replace(/\n?```$/, '') // Remove closing ```
+    .replace(/^\s*[\[\{]/, match => match.trim()) // Trim leading whitespace before JSON
+    .replace(/,\s*([\]\}])/g, '$1'); // Remove trailing commas
+};
+
+const generateWithModel = async (prompt: string, useClaude = false, retries = 3): Promise<string> => {
+  console.log(`[Backend] Generating with ${useClaude && anthropic ? 'Claude' : 'OpenAI'} (prompt length: ${prompt.length} chars, retries left: ${retries})`);
+  try {
+    // if (useClaude && anthropic) {
+    //   const response = await anthropic.createChatCompletion({
+    //     model: 'claude-3-5-sonnet-20240620',
+    //     messages: [{ role: 'user', content: prompt }],
+    //     max_tokens: 4000,
+    //   });
+    //   const output = response.choices[0]?.message?.content || '';
+    //   console.log(`[Backend] Claude output: ${output.slice(0, 200)}... (total: ${output.length} chars)`);
+    //   return output;
+    // }
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: 4000,
+    });
+    const output = completion.choices[0]?.message?.content || '';
+    console.log(`[Backend] OpenAI output: ${output.slice(0, 200)}... (total: ${output.length} chars)`);
+    return output;
+  } catch (error) {
+    console.error(`[Backend] Generation error: ${error}`);
+    if (retries > 0) {
+      console.log(`[Backend] Retrying... (${retries - 1} left)`);
+      return generateWithModel(prompt, useClaude, retries - 1);
+    }
+    throw error;
+  }
 };
 
 app.post('/api/summarize-draft', async (req, res) => {
@@ -61,9 +79,10 @@ app.post('/api/summarize-draft', async (req, res) => {
     if (!draft) return res.status(400).json({ error: 'Draft required' });
 
     const chunks = chunkText(draft);
+    console.log(`[Backend] Summarizing ${chunks.length} chunks (total ~${estimateTokens(draft)} tokens)`);
     let condensedDraft = '';
     for (let i = 0; i < chunks.length; i++) {
-      console.log(`Summarizing chunk ${i + 1}/${chunks.length} (~${estimateTokens(chunks[i])} tokens)`);
+      console.log(`[Backend] Processing chunk ${i + 1}/${chunks.length} (~${estimateTokens(chunks[i])} tokens)`);
       const summarizePrompt = `
         Summarize this story chunk concisely (200-400 words), preserving key plot, characters, tone, and details. Focus on narrative flow.
         Chunk ${i + 1}/${chunks.length}: ${chunks[i]}
@@ -71,11 +90,11 @@ app.post('/api/summarize-draft', async (req, res) => {
       const summary = await generateWithModel(summarizePrompt, useClaude);
       condensedDraft += summary + ' ';
     }
-    console.log(`Condensed draft: ${condensedDraft.slice(0, 200)}... (~${estimateTokens(condensedDraft)} tokens)`);
+    console.log(`[Backend] Condensed draft complete: ${condensedDraft.slice(0, 200)}... (~${estimateTokens(condensedDraft)} tokens)`);
     res.json({ condensedDraft });
-  } catch (error) {
-    console.error(`Summarization error: ${error}`);
-    res.status(500).json({ error: 'Summarization failed' });
+  } catch (error: any) {
+    console.error(`[Backend] Summarization error: ${error}`);
+    res.status(500).json({ error: `Summarization failed: ${error.message || 'Unknown error'}` });
   }
 });
 
@@ -84,19 +103,31 @@ app.post('/api/generate-outline', async (req, res) => {
     const { condensedDraft, useClaude } = req.body;
     if (!condensedDraft) return res.status(400).json({ error: 'Condensed draft required' });
 
+    console.log(`[Backend] Generating outline (~${estimateTokens(condensedDraft)} tokens)`);
     const outlinePrompt = `
       Analyze this condensed story draft and split it into 6-10 high-level chapters for a cohesive novel structure.
       For each: - Title (catchy, 1 line). - Summary (3-5 sentences).
-      Output JSON array: [{ "title": "...", "summary": "..." }].
+      Output a valid JSON array: [{ "title": "...", "summary": "..." }].
+      Ensure the response is strictly JSON, with no Markdown, code fences, or extra text.
       Condensed Draft: ${condensedDraft.substring(0, 10000)}... (trimmed)
     `;
     const outlineText = await generateWithModel(outlinePrompt, useClaude);
-    const chapters = JSON.parse(outlineText);
-    console.log(`Generated ${chapters.length} chapters: ${JSON.stringify(chapters[0], null, 2).slice(0, 200)}...`);
+    const cleanedText = cleanJsonResponse(outlineText);
+    let chapters;
+    try {
+      chapters = JSON.parse(cleanedText);
+      if (!Array.isArray(chapters) || !chapters.every(ch => ch.title && ch.summary)) {
+        throw new Error('Invalid chapter structure');
+      }
+    } catch (parseError: any) {
+      console.error(`[Backend] JSON parse error: ${parseError}, raw response: ${cleanedText.slice(0, 500)}...`);
+      throw new Error(`Invalid JSON response: ${parseError.message}`);
+    }
+    console.log(`[Backend] Generated ${chapters.length} chapters: ${JSON.stringify(chapters[0], null, 2).slice(0, 200)}...`);
     res.json({ chapters });
-  } catch (error) {
-    console.error(`Outline error: ${error}`);
-    res.status(500).json({ error: 'Outline generation failed' });
+  } catch (error: any) {
+    console.error(`[Backend] Outline error: ${error}, raw response: ${error.rawResponse || 'N/A'}`);
+    res.status(500).json({ error: `Outline generation failed: ${error.message || 'Unknown error'}`, rawResponse: error.rawResponse || '' });
   }
 });
 
@@ -105,6 +136,7 @@ app.post('/api/expand-chapter', async (req, res) => {
     const { condensedDraft, title, summary, useClaude } = req.body;
     if (!title || !summary) return res.status(400).json({ error: 'Chapter title and summary required' });
 
+    console.log(`[Backend] Expanding chapter "${title}"`);
     const expandPrompt = `
       Expand this chapter into a detailed, coherent narrative (800-1500 words).
       Use vivid, immersive language matching the original draft's style/tone. Ensure plot continuity.
@@ -112,14 +144,14 @@ app.post('/api/expand-chapter', async (req, res) => {
       Title: ${title}. Summary: ${summary}
     `;
     const details = await generateWithModel(expandPrompt, useClaude);
-    console.log(`Expanded chapter "${title}": ${details.slice(0, 200)}...`);
+    console.log(`[Backend] Expanded chapter "${title}": ${details.slice(0, 200)}...`);
     res.json({ details });
-  } catch (error) {
-    console.error(`Expansion error: ${error}`);
-    res.status(500).json({ error: 'Chapter expansion failed' });
+  } catch (error:any) {
+    console.error(`[Backend] Expansion error: ${error}`);
+    res.status(500).json({ error: `Chapter expansion failed: ${error.message || 'Unknown error'}` });
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`Backend running on http://localhost:${PORT} (with step logging)`);
+  console.log(`[Backend] Running on http://localhost:${PORT} (with JSON fix and retries)`);
 });
