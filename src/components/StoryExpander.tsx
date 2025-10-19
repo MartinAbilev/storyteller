@@ -5,7 +5,7 @@ interface Chapter {
   summary: string;
   details?: string;
   expansionCount?: number;
-  customPrompt?: string; // Custom prompt for chapter
+  customPrompt?: string;
 }
 
 const LOCAL_STORAGE_KEY = 'storyExpanderProgress';
@@ -23,7 +23,7 @@ const StoryExpander: React.FC = () => {
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [expandedChapters, setExpandedChapters] = useState<string[]>([]);
   const [expansionCounts, setExpansionCounts] = useState<number[]>([]);
-  const [chapterPrompts, setChapterPrompts] = useState<string[]>([]); // Per-chapter prompts
+  const [chapterPrompts, setChapterPrompts] = useState<string[]>([]);
   const [editingChapterPrompt, setEditingChapterPrompt] = useState<number | null>(null);
   const [currentStep, setCurrentStep] = useState<number>(0);
   const [currentChapterIndex, setCurrentChapterIndex] = useState<number>(0);
@@ -97,6 +97,40 @@ const StoryExpander: React.FC = () => {
     setRawError('');
   };
 
+  const regenerateSummary = async () => {
+    if (isLoading) return;
+    setIsLoading(true);
+    setError('');
+    setRawError('');
+    setStatus('Regenerating summary with new prompt...');
+    try {
+      const response = await fetch('/api/summarize-draft', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ draft, useClaude, customPrompt: summaryPrompt }),
+      });
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error || 'Summarize failed');
+      }
+      const data = await response.json();
+      setCondensedDraft(data.condensedDraft);
+      setChapters([]);
+      setExpandedChapters([]);
+      setExpansionCounts([]);
+      setChapterPrompts([]);
+      setCurrentStep(1);
+      setCurrentChapterIndex(0);
+      setStatus('Summary regenerated—proceeding to outline.');
+      saveProgress();
+    } catch (err: any) {
+      setError(`Regeneration failed: ${err.message || 'Unknown error'}. Try again.`);
+      setRawError(err.rawResponse || '');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const processStep = async () => {
     setIsLoading(true);
     setError('');
@@ -123,7 +157,7 @@ const StoryExpander: React.FC = () => {
         const response = await fetch('/api/generate-outline', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ condensedDraft, useClaude }),
+          body: JSON.stringify({ condensedDraft, useClaude, customPrompt: summaryPrompt }),
         });
         if (!response.ok) {
           const errData = await response.json();
@@ -248,8 +282,8 @@ const StoryExpander: React.FC = () => {
 
   const handleSaveSummaryPrompt = () => {
     setEditingSummaryPrompt(false);
-    if (currentStep > 0) {
-      setStatus('Summary prompt updated—clear progress to re-summarize.');
+    if (currentStep > 0 && condensedDraft) {
+      setStatus('Summary prompt updated—click "Regenerate Summary" to apply or continue to propagate to outline.');
     }
     saveProgress();
   };
@@ -342,20 +376,31 @@ const StoryExpander: React.FC = () => {
           <summary className="cursor-pointer font-medium text-blue-600 mb-2">Step 1: Condensed Draft</summary>
           <div className="flex justify-between items-center mb-2">
             <h3 className="font-semibold text-gray-800">Custom Prompt</h3>
-            {!editingSummaryPrompt && (
-              <button onClick={handleEditSummaryPrompt} className="text-blue-600 hover:text-blue-800">
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                </svg>
-              </button>
-            )}
+            <div className="flex space-x-2">
+              {!editingSummaryPrompt && (
+                <button onClick={handleEditSummaryPrompt} className="text-blue-600 hover:text-blue-800">
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                  </svg>
+                </button>
+              )}
+              {condensedDraft && (
+                <button
+                  onClick={regenerateSummary}
+                  disabled={isLoading}
+                  className="px-4 py-1 bg-yellow-600 text-white rounded-md hover:bg-yellow-700 disabled:opacity-50"
+                >
+                  Regenerate Summary
+                </button>
+              )}
+            </div>
           </div>
           {editingSummaryPrompt ? (
             <div className="mb-4">
               <textarea
                 value={summaryPrompt}
                 onChange={(e) => setSummaryPrompt(e.target.value)}
-                placeholder="Enter custom prompt for summarization (e.g., 'Emphasize grimdark themes, make character A heroic')"
+                placeholder="Enter custom prompt for summarization (e.g., 'Character A is female, Character B is male, emphasize grimdark themes')"
                 className="w-full p-2 border border-gray-300 rounded-md"
               />
               <button
@@ -397,7 +442,7 @@ const StoryExpander: React.FC = () => {
                         newPrompts[idx] = e.target.value;
                         setChapterPrompts(newPrompts);
                       }}
-                      placeholder="Enter custom prompt for this chapter (e.g., 'Make character A the villain, focus on betrayal')"
+                      placeholder="Enter custom prompt for this chapter (e.g., 'Make Character A the villain, focus on betrayal')"
                       className="w-full p-2 border border-gray-300 rounded-md"
                     />
                     <button
@@ -450,7 +495,7 @@ const StoryExpander: React.FC = () => {
                           newPrompts[idx] = e.target.value;
                           setChapterPrompts(newPrompts);
                         }}
-                        placeholder="Enter custom prompt for this chapter (e.g., 'Make character A the villain, focus on betrayal')"
+                        placeholder="Enter custom prompt for this chapter (e.g., 'Make Character A the villain, focus on betrayal')"
                         className="w-full p-2 border border-gray-300 rounded-md"
                       />
                       <button

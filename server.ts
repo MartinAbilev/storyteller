@@ -100,13 +100,14 @@ app.post('/api/summarize-draft', async (req, res) => {
 
 app.post('/api/generate-outline', async (req, res) => {
   try {
-    const { condensedDraft, useClaude } = req.body;
+    const { condensedDraft, useClaude, customPrompt } = req.body;
     if (!condensedDraft) return res.status(400).json({ error: 'Condensed draft required' });
 
     console.log(`[Backend] Generating outline (~${estimateTokens(condensedDraft)} tokens)`);
     const outlinePrompt = `
       Analyze this condensed story draft and split it into 6-10 high-level chapters for a cohesive novel structure.
       For each: - Title (catchy, 1 line). - Summary (3-5 sentences).
+      ${customPrompt ? `Additional instructions: ${customPrompt}` : ''}
       Output a valid JSON array: [{ "title": "...", "summary": "..." }].
       Ensure the response is strictly JSON, with no Markdown, code fences, or extra text.
       Condensed Draft: ${condensedDraft.substring(0, 10000)}... (trimmed)
@@ -179,5 +180,5 @@ app.post('/api/expand-chapter-more', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`[Backend] Running on http://localhost:${PORT} (with custom prompts)`);
+  console.log(`[Backend] Running on http://localhost:${PORT} (with summary prompt propagation)`);
 });
