@@ -130,7 +130,6 @@ app.post('/api/extract-key-elements', async (req, res) => {
     let keyElements;
     try {
       keyElements = JSON.parse(cleanedText);
-      // Validate keyElements structure
       if (
         !Array.isArray(keyElements.characters) ||
         !Array.isArray(keyElements.keyEvents) ||
@@ -140,7 +139,6 @@ app.post('/api/extract-key-elements', async (req, res) => {
       ) {
         throw new Error('Incomplete key elements structure');
       }
-      // Validate characters have required fields
       keyElements.characters = keyElements.characters.map((char: any, idx: number) => ({
         name: char.name || `Character ${idx + 1}`,
         gender: char.gender || 'Unknown',
@@ -153,7 +151,6 @@ app.post('/api/extract-key-elements', async (req, res) => {
       }
     } catch (parseError: any) {
       console.error(`[Backend] JSON parse error: ${parseError.message}, raw response: ${cleanedText.slice(0, 500)}...`);
-      // Fallback: Retry with stricter prompt
       console.log(`[Backend] Retrying with stricter prompt...`);
       const strictPrompt = `
         Extract key elements from this condensed novel draft as valid JSON:
@@ -294,6 +291,21 @@ app.post('/api/expand-chapter', async (req, res) => {
     if (!title || !summary) return res.status(400).json({ error: 'Chapter title and summary required' });
 
     console.log(`[Backend] Expanding chapter "${title}" (index: ${chapterIndex}, total: ${totalChapters})`);
+
+    // Filter keyElements to include only relevant characters and details
+    const chapterCharacterNames = (req.body.characterTraits || []).map((trait: string) => trait.split(':')[0].trim());
+    const relevantCharacters = keyElements.characters.filter((char: any) =>
+      chapterCharacterNames.includes(char.name)
+    );
+    const relevantKeyElements = {
+      characters: relevantCharacters,
+      uniqueDetails: keyElements.uniqueDetails.filter((detail: string) =>
+        summary.toLowerCase().includes(detail.toLowerCase()) ||
+        req.body.keyEvents.some((event: string) => event.toLowerCase().includes(detail.toLowerCase()))
+      ),
+    };
+
+    // Build previous chapters context if chapterIndex > 0
     let previousContext = '';
     if (chapterIndex > 0 && previousChapters && Array.isArray(previousChapters)) {
       previousContext = 'Previous Chapters Context:\n';
@@ -305,23 +317,37 @@ app.post('/api/expand-chapter', async (req, res) => {
       previousContext = previousContext.substring(0, 1000 * chapterIndex);
     }
 
+    // Add finale instruction for the last chapter
     const isFinalChapter = chapterIndex === totalChapters - 1;
     const finaleInstruction = isFinalChapter
       ? 'This is the final chapter. Conclude the story with a climactic, cohesive ending, resolving key plotlines and character arcs while maintaining the tone.'
       : '';
 
     const expandPrompt = `
-      Expand this chapter into a detailed, coherent narrative (800-1500 words).
-      Use vivid, immersive language matching the original draft's style/tone. Ensure plot continuity.
-      Use these key elements: ${JSON.stringify(keyElements)}.
+      Expand this chapter into a detailed, coherent narrative (800-1500 words) based strictly on the provided chapter summary and key events.
+      Focus only on the events, characters, and details relevant to this chapter, as specified below.
+      Use vivid, immersive language matching the original draft's style/tone (cyberpunk, noir, eldritch undertones).
+      Ensure plot continuity with previous chapters, if any.
+      Relevant Characters: ${JSON.stringify(relevantCharacters)}.
+      Relevant Unique Details: ${JSON.stringify(relevantKeyElements.uniqueDetails)}.
       ${previousContext ? `${previousContext}\n` : ''}
       ${finaleInstruction ? `${finaleInstruction}\n` : ''}
       ${customPrompt ? `Additional instructions: ${customPrompt}` : ''}
-      Reference full context: ${condensedDraft.substring(0, 5000)}...
-      Title: ${title}. Summary: ${summary}
+      Chapter Title: ${title}
+      Chapter Summary: ${summary}
+      Chapter Key Events: ${JSON.stringify(req.body.keyEvents || [])}
+      Full Draft Context (for tone and style only): ${condensedDraft.substring(0, 2000)}... (trimmed)
     `;
     const details = await generateWithModel(expandPrompt, model);
-    console.log(`[Backend] Expanded chapter "${title}": ${details.slice(0, 200)}...`);
+    // Basic validation: check length and relevance
+    const wordCount = details.split(/\s+/).length;
+    if (wordCount < 800 || wordCount > 1500) {
+      console.warn(`[Backend] Chapter "${title}" expansion word count (${wordCount}) outside range (800-1500)`);
+    }
+    if (!details.toLowerCase().includes('girl a') || !details.toLowerCase().includes('ricota') || !details.toLowerCase().includes('air taxi')) {
+      console.warn(`[Backend] Chapter "${title}" expansion may not focus on key events: ${details.slice(0, 200)}...`);
+    }
+    console.log(`[Backend] Expanded chapter "${title}": ${details.slice(0, 200)}... (word count: ${wordCount})`);
     res.json({ details });
   } catch (error: any) {
     console.error(`[Backend] Expansion error: ${error.message || error}`);
@@ -335,6 +361,20 @@ app.post('/api/expand-chapter-more', async (req, res) => {
     if (!title || !summary || !existingDetails) return res.status(400).json({ error: 'Title, summary, and existing details required' });
 
     console.log(`[Backend] Expanding chapter "${title}" further (index: ${chapterIndex}, total: ${totalChapters})`);
+
+    // Filter keyElements to include only relevant characters and details
+    const chapterCharacterNames = (req.body.characterTraits || []).map((trait: string) => trait.split(':')[0].trim());
+    const relevantCharacters = keyElements.characters.filter((char: any) =>
+      chapterCharacterNames.includes(char.name)
+    );
+    const relevantKeyElements = {
+      characters: relevantCharacters,
+      uniqueDetails: keyElements.uniqueDetails.filter((detail: string) =>
+        summary.toLowerCase().includes(detail.toLowerCase()) ||
+        req.body.keyEvents.some((event: string) => event.toLowerCase().includes(detail.toLowerCase()))
+      ),
+    };
+
     let previousContext = '';
     if (chapterIndex > 0 && previousChapters && Array.isArray(previousChapters)) {
       previousContext = 'Previous Chapters Context:\n';
@@ -352,20 +392,24 @@ app.post('/api/expand-chapter-more', async (req, res) => {
       : '';
 
     const expandMorePrompt = `
-      Expand this existing chapter narrative by adding 500-1000 words, continuing the story seamlessly.
-      Maintain the same style, tone, and plot continuity as the existing text.
-      Use these key elements: ${JSON.stringify(keyElements)}.
+      Expand this existing chapter narrative by adding 500-1000 words, continuing the story seamlessly based on the provided chapter summary and key events.
+      Focus only on the events, characters, and details relevant to this chapter, as specified below.
+      Maintain the same style, tone (cyberpunk, noir, eldritch undertones), and plot continuity as the existing text.
+      Relevant Characters: ${JSON.stringify(relevantCharacters)}.
+      Relevant Unique Details: ${JSON.stringify(relevantKeyElements.uniqueDetails)}.
       ${previousContext ? `${previousContext}\n` : ''}
       ${finaleInstruction ? `${finaleInstruction}\n` : ''}
       ${customPrompt ? `Additional instructions: ${customPrompt}` : ''}
-      Reference full context: ${condensedDraft.substring(0, 5000)}...
-      Title: ${title}
-      Summary: ${summary}
+      Chapter Title: ${title}
+      Chapter Summary: ${summary}
+      Chapter Key Events: ${JSON.stringify(req.body.keyEvents || [])}
       Existing Narrative: ${existingDetails.substring(0, 10000)}... (trimmed)
+      Full Draft Context (for tone and style only): ${condensedDraft.substring(0, 2000)}... (trimmed)
     `;
     const additionalDetails = await generateWithModel(expandMorePrompt, model);
     const updatedDetails = existingDetails + '\n\n' + additionalDetails;
-    console.log(`[Backend] Further expanded chapter "${title}": ${updatedDetails.slice(0, 200)}...`);
+    const wordCount = updatedDetails.split(/\s+/).length;
+    console.log(`[Backend] Further expanded chapter "${title}": ${updatedDetails.slice(0, 200)}... (total word count: ${wordCount})`);
     res.json({ details: updatedDetails });
   } catch (error: any) {
     console.error(`[Backend] Further expansion error: ${error.message || error}`);
@@ -374,5 +418,5 @@ app.post('/api/expand-chapter-more', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`[Backend] Running on http://localhost:${PORT} (OpenAI-only with richer outline, fixed chunkText, and validated key elements)`);
+  console.log(`[Backend] Running on http://localhost:${PORT} (OpenAI-only with richer outline, fixed chunkText, validated key elements, and chapter-focused expansion)`);
 });

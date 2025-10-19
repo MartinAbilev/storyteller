@@ -22,7 +22,6 @@ interface Chapter {
   keyEvents?: string[];
   characterTraits?: string[];
   timeline?: string;
-  details?: string;
   expansionCount?: number;
   customPrompt?: string;
 }
@@ -31,7 +30,7 @@ const LOCAL_STORAGE_KEY = 'storyExpanderProgress';
 
 const StoryExpander: React.FC = () => {
   const [draft, setDraft] = useState<string>('');
-  const [model, setModel] = useState<string>('gpt-5'); // Default to GPT-5
+  const [model, setModel] = useState<string>('gpt-5');
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [status, setStatus] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -45,12 +44,11 @@ const StoryExpander: React.FC = () => {
   const [expansionCounts, setExpansionCounts] = useState<number[]>([]);
   const [chapterPrompts, setChapterPrompts] = useState<string[]>([]);
   const [editingChapterPrompt, setEditingChapterPrompt] = useState<number | null>(null);
-  const [currentStep, setCurrentStep] = useState<number>(0); // 0: summarize, 1: extract key elements, 2: outline, 3: expand
+  const [currentStep, setCurrentStep] = useState<number>(0);
   const [currentChapterIndex, setCurrentChapterIndex] = useState<number>(0);
   const [draftHash, setDraftHash] = useState<string>('');
   const [chapterLoading, setChapterLoading] = useState<number | null>(null);
 
-  // Model options
   const modelOptions = [
     { value: 'gpt-4o-mini', label: 'GPT-4o-mini (Fast & Cheap)' },
     { value: 'gpt-4o', label: 'GPT-4o (Balanced)' },
@@ -241,6 +239,8 @@ const StoryExpander: React.FC = () => {
             condensedDraft,
             title: chapter.title,
             summary: chapter.summary,
+            keyEvents: chapter.keyEvents || [],
+            characterTraits: chapter.characterTraits || [],
             model,
             customPrompt,
             chapterIndex: currentChapterIndex,
@@ -311,6 +311,8 @@ const StoryExpander: React.FC = () => {
           condensedDraft,
           title: chapter.title,
           summary: chapter.summary,
+          keyEvents: chapter.keyEvents || [],
+          characterTraits: chapter.characterTraits || [],
           existingDetails: expandedChapters[chapterIndex],
           model,
           customPrompt,
