@@ -34,12 +34,11 @@ const chunkText = (text: string, maxWords = 5000): string[] => {
 };
 
 const cleanJsonResponse = (text: string): string => {
-  // Strip Markdown code fences and other common issues
   return text
-    .replace(/^```json\s*\n?/, '') // Remove ```json
-    .replace(/\n?```$/, '') // Remove closing ```
-    .replace(/^\s*[\[\{]/, match => match.trim()) // Trim leading whitespace before JSON
-    .replace(/,\s*([\]\}])/g, '$1'); // Remove trailing commas
+    .replace(/^```json\s*\n?/, '')
+    .replace(/\n?```$/, '')
+    .replace(/^\s*[\[\{]/, match => match.trim())
+    .replace(/,\s*([\]\}])/g, '$1');
 };
 
 const generateWithModel = async (prompt: string, useClaude = false, retries = 3): Promise<string> => {
@@ -63,8 +62,8 @@ const generateWithModel = async (prompt: string, useClaude = false, retries = 3)
     const output = completion.choices[0]?.message?.content || '';
     console.log(`[Backend] OpenAI output: ${output.slice(0, 200)}... (total: ${output.length} chars)`);
     return output;
-  } catch (error) {
-    console.error(`[Backend] Generation error: ${error}`);
+  } catch (error: any) {
+    console.error(`[Backend] Generation error: ${error.message || error}`);
     if (retries > 0) {
       console.log(`[Backend] Retrying... (${retries - 1} left)`);
       return generateWithModel(prompt, useClaude, retries - 1);
@@ -93,7 +92,7 @@ app.post('/api/summarize-draft', async (req, res) => {
     console.log(`[Backend] Condensed draft complete: ${condensedDraft.slice(0, 200)}... (~${estimateTokens(condensedDraft)} tokens)`);
     res.json({ condensedDraft });
   } catch (error: any) {
-    console.error(`[Backend] Summarization error: ${error}`);
+    console.error(`[Backend] Summarization error: ${error.message || error}`);
     res.status(500).json({ error: `Summarization failed: ${error.message || 'Unknown error'}` });
   }
 });
@@ -120,13 +119,13 @@ app.post('/api/generate-outline', async (req, res) => {
         throw new Error('Invalid chapter structure');
       }
     } catch (parseError: any) {
-      console.error(`[Backend] JSON parse error: ${parseError}, raw response: ${cleanedText.slice(0, 500)}...`);
-      throw new Error(`Invalid JSON response: ${parseError.message}`);
+      console.error(`[Backend] JSON parse error: ${parseError.message}, raw response: ${cleanedText.slice(0, 500)}...`);
+      throw Object.assign(new Error(`Invalid JSON response: ${parseError.message}`), { rawResponse: cleanedText });
     }
     console.log(`[Backend] Generated ${chapters.length} chapters: ${JSON.stringify(chapters[0], null, 2).slice(0, 200)}...`);
     res.json({ chapters });
   } catch (error: any) {
-    console.error(`[Backend] Outline error: ${error}, raw response: ${error.rawResponse || 'N/A'}`);
+    console.error(`[Backend] Outline error: ${error.message || error}, raw response: ${error.rawResponse || 'N/A'}`);
     res.status(500).json({ error: `Outline generation failed: ${error.message || 'Unknown error'}`, rawResponse: error.rawResponse || '' });
   }
 });
@@ -146,12 +145,36 @@ app.post('/api/expand-chapter', async (req, res) => {
     const details = await generateWithModel(expandPrompt, useClaude);
     console.log(`[Backend] Expanded chapter "${title}": ${details.slice(0, 200)}...`);
     res.json({ details });
-  } catch (error:any) {
-    console.error(`[Backend] Expansion error: ${error}`);
+  } catch (error: any) {
+    console.error(`[Backend] Expansion error: ${error.message || error}`);
     res.status(500).json({ error: `Chapter expansion failed: ${error.message || 'Unknown error'}` });
   }
 });
 
+app.post('/api/expand-chapter-more', async (req, res) => {
+  try {
+    const { condensedDraft, title, summary, existingDetails, useClaude } = req.body;
+    if (!title || !summary || !existingDetails) return res.status(400).json({ error: 'Title, summary, and existing details required' });
+
+    console.log(`[Backend] Expanding chapter "${title}" further`);
+    const expandMorePrompt = `
+      Expand this existing chapter narrative by adding 500-1000 words, continuing the story seamlessly.
+      Maintain the same style, tone, and plot continuity as the existing text.
+      Reference full context: ${condensedDraft.substring(0, 5000)}...
+      Title: ${title}
+      Summary: ${summary}
+      Existing Narrative: ${existingDetails.substring(0, 10000)}... (trimmed)
+    `;
+    const additionalDetails = await generateWithModel(expandMorePrompt, useClaude);
+    const updatedDetails = existingDetails + '\n\n' + additionalDetails;
+    console.log(`[Backend] Further expanded chapter "${title}": ${updatedDetails.slice(0, 200)}...`);
+    res.json({ details: updatedDetails });
+  } catch (error: any) {
+    console.error(`[Backend] Further expansion error: ${error.message || error}`);
+    res.status(500).json({ error: `Further expansion failed: ${error.message || 'Unknown error'}` });
+  }
+});
+
 app.listen(PORT, () => {
-  console.log(`[Backend] Running on http://localhost:${PORT} (with JSON fix and retries)`);
+  console.log(`[Backend] Running on http://localhost:${PORT} (with recursive expansion)`);
 });

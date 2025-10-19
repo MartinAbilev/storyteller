@@ -4,6 +4,7 @@ interface Chapter {
   title: string;
   summary: string;
   details?: string;
+  expansionCount?: number; // Track how many times expanded
 }
 
 const LOCAL_STORAGE_KEY = 'storyExpanderProgress';
@@ -14,16 +15,18 @@ const StoryExpander: React.FC = () => {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [status, setStatus] = useState<string>('');
   const [error, setError] = useState<string>('');
-  const [rawError, setRawError] = useState<string>(''); // For raw API response
+  const [rawError, setRawError] = useState<string>('');
   const [condensedDraft, setCondensedDraft] = useState<string>('');
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [expandedChapters, setExpandedChapters] = useState<string[]>([]);
+  const [expansionCounts, setExpansionCounts] = useState<number[]>([]); // Per-chapter expansion count
   const [currentStep, setCurrentStep] = useState<number>(0);
   const [currentChapterIndex, setCurrentChapterIndex] = useState<number>(0);
   const [draftHash, setDraftHash] = useState<string>('');
+  const [chapterLoading, setChapterLoading] = useState<number | null>(null); // Track which chapter is expanding
 
-  const totalSteps = 3 + (chapters.length || 6);
-  const completedSteps = currentStep + (currentStep === 2 ? currentChapterIndex : 0);
+  const totalSteps = 3 + (chapters.length || 6) + expansionCounts.reduce((sum, count) => sum + count, 0);
+  const completedSteps = currentStep + (currentStep === 2 ? currentChapterIndex : 0) + expansionCounts.reduce((sum, count) => sum + count, 0);
   const progressPercent = ((completedSteps / totalSteps) * 100).toFixed(1);
 
   const hashDraft = async (text: string): Promise<string> => {
@@ -44,6 +47,7 @@ const StoryExpander: React.FC = () => {
           setCondensedDraft(progress.condensedDraft || '');
           setChapters(progress.chapters || []);
           setExpandedChapters(progress.expandedChapters || []);
+          setExpansionCounts(progress.expansionCounts || []);
           setCurrentStep(progress.currentStep || 0);
           setCurrentChapterIndex(progress.currentChapterIndex || 0);
           setDraftHash(currentHash);
@@ -62,6 +66,7 @@ const StoryExpander: React.FC = () => {
       condensedDraft,
       chapters,
       expandedChapters,
+      expansionCounts,
       currentStep,
       currentChapterIndex,
     };
@@ -73,6 +78,7 @@ const StoryExpander: React.FC = () => {
     setCondensedDraft('');
     setChapters([]);
     setExpandedChapters([]);
+    setExpansionCounts([]);
     setCurrentStep(0);
     setCurrentChapterIndex(0);
     setStatus('Progress cleared—start over.');
@@ -115,6 +121,7 @@ const StoryExpander: React.FC = () => {
         const data = await response.json();
         setChapters(data.chapters);
         setExpandedChapters(new Array(data.chapters.length).fill(''));
+        setExpansionCounts(new Array(data.chapters.length).fill(0));
         setCurrentStep(2);
         setCurrentChapterIndex(0);
         setStatus('Step 2 complete: Outline generated (see below).');
@@ -122,6 +129,7 @@ const StoryExpander: React.FC = () => {
       } else if (currentStep === 2 && currentChapterIndex < chapters.length) {
         const chapter = chapters[currentChapterIndex];
         setStatus(`Step 3: Expanding chapter ${currentChapterIndex + 1}/${chapters.length} ("${chapter.title}")...`);
+        setChapterLoading(currentChapterIndex);
         const response = await fetch('/api/expand-chapter', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -147,11 +155,12 @@ const StoryExpander: React.FC = () => {
           setStatus('All chapters expanded—full story ready!');
         }
       }
-    } catch (err) {
+    } catch (err: any) {
       setError(`Step failed: ${err.message || 'Unknown error'}. Click Continue to retry.`);
       setRawError(err.rawResponse || '');
     } finally {
       setIsLoading(false);
+      setChapterLoading(null);
     }
   };
 
@@ -175,6 +184,46 @@ const StoryExpander: React.FC = () => {
   const handleContinue = () => {
     if (isLoading) return;
     processStep();
+  };
+
+  const handleExpandMore = async (chapterIndex: number) => {
+    if (chapterLoading !== null) return;
+    setChapterLoading(chapterIndex);
+    setError('');
+    setRawError('');
+    try {
+      const chapter = chapters[chapterIndex];
+      setStatus(`Expanding chapter ${chapterIndex + 1} ("${chapter.title}") further...`);
+      const response = await fetch('/api/expand-chapter-more', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          condensedDraft,
+          title: chapter.title,
+          summary: chapter.summary,
+          existingDetails: expandedChapters[chapterIndex],
+          useClaude,
+        }),
+      });
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error || `Further expansion for chapter ${chapterIndex + 1} failed`);
+      }
+      const data = await response.json();
+      const newExpanded = [...expandedChapters];
+      newExpanded[chapterIndex] = data.details;
+      setExpandedChapters(newExpanded);
+      const newCounts = [...expansionCounts];
+      newCounts[chapterIndex] = (newCounts[chapterIndex] || 0) + 1;
+      setExpansionCounts(newCounts);
+      setStatus(`Chapter ${chapterIndex + 1} expanded further (${newCounts[chapterIndex]}x).`);
+      saveProgress();
+    } catch (err: any) {
+      setError(`Further expansion failed: ${err.message || 'Unknown error'}. Try again.`);
+      setRawError(err.rawResponse || '');
+    } finally {
+      setChapterLoading(null);
+    }
   };
 
   useEffect(() => {
@@ -278,7 +327,16 @@ const StoryExpander: React.FC = () => {
             {chapters.map((chapter, idx) => (
               expandedChapters[idx] && (
                 <div key={idx} className="border-l-4 border-blue-500 pl-4">
-                  <h3 className="font-semibold text-gray-800">{chapter.title}</h3>
+                  <div className="flex justify-between items-center">
+                    <h3 className="font-semibold text-gray-800">{chapter.title} {expansionCounts[idx] > 0 && ` (Expanded ${expansionCounts[idx]}x)`}</h3>
+                    <button
+                      onClick={() => handleExpandMore(idx)}
+                      disabled={chapterLoading !== null}
+                      className="px-4 py-1 bg-purple-600 text-white rounded-md hover:bg-purple-700 disabled:opacity-50"
+                    >
+                      {chapterLoading === idx ? 'Expanding...' : 'Expand More'}
+                    </button>
+                  </div>
                   <p className="text-sm text-gray-600 italic mb-2">Summary: {chapter.summary}</p>
                   <div className="prose max-w-none text-gray-700">
                     <p>{expandedChapters[idx]}</p>
