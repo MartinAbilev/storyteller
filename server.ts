@@ -196,15 +196,22 @@ app.post('/api/extract-key-elements', async (req, res) => {
 
 app.post('/api/generate-outline', async (req, res) => {
   try {
-    const { condensedDraft, model, customPrompt } = req.body;
+    const { condensedDraft, model, customPrompt, keyElements } = req.body;
     if (!condensedDraft) return res.status(400).json({ error: 'Condensed draft required' });
+    if (!keyElements) return res.status(400).json({ error: 'Key elements required' });
 
     console.log(`[Backend] Generating outline (~${estimateTokens(condensedDraft)} tokens)`);
     const outlinePrompt = `
-      Analyze this condensed story draft and split it into 6-10 high-level chapters for a cohesive novel structure.
-      For each: - Title (catchy, 1 line). - Summary (3-5 sentences).
+      Analyze this condensed novel draft and extract key elements to create a rich, detailed outline for 6-10 high-level chapters.
+      Use these key elements: ${JSON.stringify(keyElements)}.
+      For each chapter:
+      - Title (catchy, 1 line).
+      - Summary (5-7 sentences, including key events, character developments, unique details).
+      - Key Events (3-5 bullet points).
+      - Character Traits Involved (list main characters with traits as strings, e.g., "Character A: trait, agenda").
+      - Timeline Position (e.g., Day 1-3).
       ${customPrompt ? `Additional instructions: ${customPrompt}` : ''}
-      Output a valid JSON array: [{ "title": "...", "summary": "..." }].
+      Output a valid JSON array: [{ "title": "...", "summary": "...", "keyEvents": ["..."], "characterTraits": ["..."], "timeline": "..." }].
       Ensure the response is strictly JSON, with no Markdown, code fences, or extra text.
       Condensed Draft: ${condensedDraft.substring(0, 10000)}... (trimmed)
     `;
@@ -213,33 +220,58 @@ app.post('/api/generate-outline', async (req, res) => {
     let chapters;
     try {
       chapters = JSON.parse(cleanedText);
-      if (!Array.isArray(chapters) || !chapters.every(ch => ch.title && ch.summary)) {
+      if (!Array.isArray(chapters)) {
+        throw new Error('Response is not an array');
+      }
+      chapters = chapters.map((ch: any, idx: number) => ({
+        title: ch.title || `Chapter ${idx + 1}`,
+        summary: ch.summary || 'No summary available.',
+        keyEvents: Array.isArray(ch.keyEvents) ? ch.keyEvents : [],
+        characterTraits: Array.isArray(ch.characterTraits) ? ch.characterTraits : [],
+        timeline: ch.timeline || 'Unknown timeline',
+      }));
+      if (chapters.length < 6 || chapters.length > 10) {
+        throw new Error(`Invalid number of chapters: ${chapters.length}`);
+      }
+      if (!chapters.every(ch => ch.title && ch.summary && Array.isArray(ch.keyEvents) && Array.isArray(ch.characterTraits) && ch.timeline)) {
         throw new Error('Invalid chapter structure');
       }
     } catch (parseError: any) {
       console.error(`[Backend] JSON parse error: ${parseError.message}, raw response: ${cleanedText.slice(0, 500)}...`);
-      // Fallback: Retry with a simplified prompt to ensure JSON output
-      if (!cleanedText) {
-        console.log(`[Backend] Empty response, retrying with simplified prompt...`);
-        const simplifiedPrompt = `
-          Summarize this story draft into 6-10 chapters as a JSON array: [{ "title": "...", "summary": "..." }].
-          Each title is 1 line, each summary is 3-5 sentences.
-          ${customPrompt ? `Additional instructions: ${customPrompt}` : ''}
-          Draft: ${condensedDraft.substring(0, 10000)}...
-        `;
-        const retryText = await generateWithModel(simplifiedPrompt, model);
-        const retryCleaned = cleanJsonResponse(retryText);
-        try {
-          chapters = JSON.parse(retryCleaned);
-          if (!Array.isArray(chapters) || !chapters.every(ch => ch.title && ch.summary)) {
-            throw new Error('Invalid chapter structure in retry');
-          }
-        } catch (retryError: any) {
-          console.error(`[Backend] Retry JSON parse error: ${retryError.message}, raw response: ${retryCleaned.slice(0, 500)}...`);
-          throw Object.assign(new Error(`Invalid JSON response: ${retryError.message}`), { rawResponse: retryCleaned });
+      console.log(`[Backend] Retrying with stricter prompt...`);
+      const strictPrompt = `
+        Create a JSON array of 6-10 chapters based on this condensed novel draft.
+        Use these key elements: ${JSON.stringify(keyElements)}.
+        Each chapter must have:
+        - title: Catchy, 1 line.
+        - summary: 5-7 sentences with key events and details.
+        - keyEvents: 3-5 bullet points as an array.
+        - characterTraits: Array of main characters with traits as strings.
+        - timeline: Position (e.g., Day 1-3).
+        ${customPrompt ? `Additional instructions: ${customPrompt}` : ''}
+        Output strictly JSON: [{ "title": "...", "summary": "...", "keyEvents": ["..."], "characterTraits": ["..."], "timeline": "..." }].
+        Draft: ${condensedDraft.substring(0, 10000)}...
+      `;
+      const retryText = await generateWithModel(strictPrompt, model);
+      const retryCleaned = cleanJsonResponse(retryText);
+      try {
+        chapters = JSON.parse(retryCleaned);
+        chapters = chapters.map((ch: any, idx: number) => ({
+          title: ch.title || `Chapter ${idx + 1}`,
+          summary: ch.summary || 'No summary available.',
+          keyEvents: Array.isArray(ch.keyEvents) ? ch.keyEvents : [],
+          characterTraits: Array.isArray(ch.characterTraits) ? ch.characterTraits : [],
+          timeline: ch.timeline || 'Unknown timeline',
+        }));
+        if (chapters.length < 6 || chapters.length > 10) {
+          throw new Error(`Invalid number of chapters in retry: ${chapters.length}`);
         }
-      } else {
-        throw Object.assign(new Error(`Invalid JSON response: ${parseError.message}`), { rawResponse: cleanedText });
+        if (!chapters.every((ch: { title: any; summary: any; keyEvents: any; characterTraits: any; timeline: any; }) => ch.title && ch.summary && Array.isArray(ch.keyEvents) && Array.isArray(ch.characterTraits) && ch.timeline)) {
+          throw new Error('Invalid chapter structure in retry');
+        }
+      } catch (retryError: any) {
+        console.error(`[Backend] Retry JSON parse error: ${retryError.message}, raw response: ${retryCleaned.slice(0, 500)}...`);
+        throw Object.assign(new Error(`Invalid JSON response: ${retryError.message}`), { rawResponse: retryCleaned });
       }
     }
     console.log(`[Backend] Generated ${chapters.length} chapters: ${JSON.stringify(chapters[0], null, 2).slice(0, 200)}...`);
