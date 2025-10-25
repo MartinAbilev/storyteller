@@ -284,30 +284,50 @@ app.post('/api/generate-outline', async (req, res) => {
 
 app.post('/api/expand-chapter', async (req, res) => {
   try {
-    const { condensedDraft, title, summary, model, customPrompt, chapterIndex, previousChapters, totalChapters } = req.body;
+    const { condensedDraft, title, summary, model, customPrompt, chapterIndex, previousChapters, totalChapters, keyElements, keyEvents, characterTraits, timeline } = req.body;
     if (!title || !summary) return res.status(400).json({ error: 'Chapter title and summary required' });
 
     console.log(`[Backend] Expanding chapter "${title}" (index: ${chapterIndex}, total: ${totalChapters})`);
-    // Build previous chapters context if chapterIndex > 0
+    console.log(`[Backend] Request body: ${JSON.stringify(req.body, null, 2).slice(0, 500)}...`);
+
+    const safeKeyEvents = Array.isArray(keyEvents) ? keyEvents : [];
+    const safeCharacterTraits = Array.isArray(characterTraits) ? characterTraits : [];
+
+    const chapterCharacterNames = safeCharacterTraits.map((trait: string) => trait.split(':')[0].trim());
+    const relevantCharacters = keyElements.characters.filter((char: any) =>
+      chapterCharacterNames.includes(char.name)
+    );
+    const relevantKeyEvents = keyElements.keyEvents.filter((event: string) =>
+      safeKeyEvents.some((chapterEvent: string) => event.toLowerCase().includes(chapterEvent.toLowerCase().split(' ')[0])) ||
+      summary.toLowerCase().includes(event.toLowerCase().split(' ')[0])
+    );
+    const relevantKeyElements = {
+      characters: relevantCharacters,
+      keyEvents: relevantKeyEvents,
+      uniqueDetails: keyElements.uniqueDetails.filter((detail: string) =>
+        summary.toLowerCase().includes(detail.toLowerCase()) ||
+        safeKeyEvents.some((event: string) => event.toLowerCase().includes(detail.toLowerCase()))
+      ),
+    };
+
     let previousContext = '';
     if (chapterIndex > 0 && previousChapters && Array.isArray(previousChapters)) {
       previousContext = 'Previous Chapters Context:\n';
-      previousChapters.forEach((ch: { title: string; summary: string }, idx: number) => {
+      previousChapters.forEach((ch: { title: string; summary: string; keyEvents: string[]; characterTraits: string[]; timeline: string }, idx: number) => {
         if (idx < chapterIndex) {
-          previousContext += `Chapter ${idx + 1}: ${ch.title}\nSummary: ${ch.summary}\nKey Details: Maintain continuity with prior events and characters.\n\n`;
+          previousContext += `Chapter ${idx + 1}: ${ch.title}\nSummary: ${ch.summary}\nKey Events: ${ch.keyEvents.join(', ')}\nCharacter Traits: ${ch.characterTraits.join(', ')}\nTimeline: ${ch.timeline}\n\n`;
         }
       });
-      // Truncate to avoid token overflow
       previousContext = previousContext.substring(0, 1000 * chapterIndex);
     }
 
     // Add finale instruction for the last chapter
     const isFinalChapter = chapterIndex === totalChapters - 1;
     const finaleInstruction = isFinalChapter
-      ? 'This is the final chapter. Conclude the story with a climactic, cohesive ending, resolving key plotlines and character arcs (e.g., Inquisitor Valeria’s mission, Captain Zorath’s fate) while maintaining the grimdark tone.'
+      ? 'This is the final chapter. Conclude the story with a climactic, cohesive ending, resolving key plotlines and character arcs'
       : '';
 
-    const expandPrompt = `
+    const expandPromptOld = `
       Expand and this chapter as continution of previous context and into a detailed, coherent narrative (800-1500 words).
       Use vivid, immersive language matching the original draft's style/tone. Ensure plot continuity.
       ${previousContext ? `${previousContext}\n` : ''}
@@ -318,6 +338,36 @@ app.post('/api/expand-chapter', async (req, res) => {
 
       make chapters begining diferent from previous chapters. dont make same begining of chapter as previous
     `;
+
+    const expandPrompt = `
+      Expand this chapter into a detailed, coherent narrative (800-1500 words) based strictly on the provided chapter summary and key events.
+      Focus only on the events, characters, and details relevant to this chapter, as specified below.
+      Use vivid, immersive language matching the original draft's style/tone.
+      Ensure plot continuity with previous chapters, if any.
+      Start the chapter with a unique opening that avoids repetition with other chapters, emphasizing the specific events and timeline of this chapter.
+      Only use the provided Chapter Key Events and Relevant Key Events; ignore any other events from the full draft context.
+
+      Relevant Characters: ${JSON.stringify(relevantCharacters)}.
+      Relevant Key Events: ${JSON.stringify(relevantKeyEvents)}.
+      Relevant Unique Details: ${JSON.stringify(relevantKeyElements.uniqueDetails)}.
+      ${previousContext ? `${previousContext}\n` : ''}
+      ${finaleInstruction ? `${finaleInstruction}\n` : ''}
+
+      ${customPrompt ? `Additional instructions: ${customPrompt}` : ''}
+
+      Chapter Title: ${title}
+      Chapter Summary: ${summary}
+      Chapter Key Events: ${JSON.stringify(safeKeyEvents)}
+      Chapter Timeline: ${timeline || 'Unknown timeline'}
+
+      make chapter begining diferent from previous chapters. dont make same begining of chapter as previous
+
+      Full Draft Context (for tone and style only, do not use events): ${condensedDraft.substring(0, 2000)}... (trimmed)
+    `;
+
+
+
+
     const details = await generateWithModel(expandPrompt, model);
     console.log(`[Backend] Expanded chapter "${title}": ${details.slice(0, 200)}...`);
     res.json({ details });
