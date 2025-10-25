@@ -43,11 +43,40 @@ const StoryExpander: React.FC = () => {
   const progressPercent = ((completedSteps / totalSteps) * 100).toFixed(1);
 
   const hashDraft = async (text: string): Promise<string> => {
-    const encoder = new TextEncoder();
-    const data = encoder.encode(text);
-    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    if (!text) return '';
+    try {
+      // Check if running in a secure context
+      const isSecureContext = window.isSecureContext || (window.location.hostname === 'localhost' || window.location.protocol === 'https:');
+      console.log(`[Frontend] hashDraft: Running in secure context: ${isSecureContext}, hostname: ${window.location.hostname}, protocol: ${window.location.protocol}`);
+
+      if (!window.crypto?.subtle) {
+        console.warn('[Frontend] hashDraft: Web Crypto API (crypto.subtle) unavailable, using fallback hash');
+        // Simple fallback hash (not cryptographically secure, but sufficient for progress tracking)
+        let hash = 0;
+        for (let i = 0; i < text.length; i++) {
+          const char = text.charCodeAt(i);
+          hash = ((hash << 5) - hash) + char;
+          hash = hash & hash; // Convert to 32-bit integer
+        }
+        return Math.abs(hash).toString(16).padStart(8, '0');
+      }
+
+      const encoder = new TextEncoder();
+      const data = encoder.encode(text);
+      const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    } catch (error: any) {
+      console.error(`[Frontend] hashDraft error: ${error.message || error}`);
+      // Fallback hash on error
+      let hash = 0;
+      for (let i = 0; i < text.length; i++) {
+        const char = text.charCodeAt(i);
+        hash = ((hash << 5) - hash) + char;
+        hash = hash & hash;
+      }
+      return Math.abs(hash).toString(16).padStart(8, '0');
+    }
   };
 
   useEffect(() => {
