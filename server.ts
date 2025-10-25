@@ -9,7 +9,8 @@ const app = express();
 const PORT = 3001;
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '100mb' }));
+
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -19,15 +20,27 @@ const chunkText = (text: string, maxWords = 5000): string[] => {
   const sentences = text.match(/[^.!?]+[.!?]+/gs) || [text];
   const chunks: string[] = [];
   let currentChunk = '';
+  let sentenceCount = 0;
+  console.log(`[Backend] chunkText: Processing ${sentences.length} sentences`);
   for (const sentence of sentences) {
-    if ((currentChunk.split(/\s+/).length + sentence.split(/\s+/).length) > maxWords) {
-      if (currentChunk) chunks.push(currentChunk.trim());
+    const sentenceWords = sentence.split(/\s+/).length;
+    if ((currentChunk.split(/\s+/).length + sentenceWords) > maxWords) {
+      if (currentChunk) {
+        chunks.push(currentChunk.trim());
+        console.log(`[Backend] chunkText: Created chunk ${chunks.length} (~${estimateTokens(currentChunk)} tokens)`);
+      }
       currentChunk = sentence;
+      sentenceCount = 1;
     } else {
       currentChunk += ' ' + sentence;
+      sentenceCount++;
     }
   }
-  if (currentChunk) chunks.push(currentChunk.trim());
+  if (currentChunk) {
+    chunks.push(currentChunk.trim());
+    console.log(`[Backend] chunkText: Created final chunk ${chunks.length} (~${estimateTokens(currentChunk)} tokens)`);
+  }
+  console.log(`[Backend] chunkText: Generated ${chunks.length} chunks from ${sentenceCount} sentences`);
   return chunks;
 };
 
@@ -42,7 +55,6 @@ const cleanJsonResponse = (text: string): string => {
 const generateWithModel = async (prompt: string, model: string, retries = 3, isFallback = false): Promise<string> => {
   console.log(`[Backend] Generating with OpenAI model "${model}" (prompt length: ${prompt.length} chars, retries left: ${retries}, fallback: ${isFallback})`);
 
-  // Use max_completion_tokens for GPT-5 and its variants, max_tokens for others
   const tokenParam = model.startsWith('gpt-5') ? { max_completion_tokens: 4000 } : { max_tokens: 4000 };
 
   try {
@@ -73,27 +85,112 @@ const generateWithModel = async (prompt: string, model: string, retries = 3, isF
 
 app.post('/api/summarize-draft', async (req, res) => {
   try {
-    const { draft, model, customPrompt } = req.body;
+    const { draft, model, customPrompt, chunkIndex, totalChunks } = req.body;
     if (!draft) return res.status(400).json({ error: 'Draft required' });
-
-    const chunks = chunkText(draft);
-    console.log(`[Backend] Summarizing ${chunks.length} chunks (total ~${estimateTokens(draft)} tokens)`);
-    let condensedDraft = '';
-    for (let i = 0; i < chunks.length; i++) {
-      console.log(`[Backend] Processing chunk ${i + 1}/${chunks.length} (~${estimateTokens(chunks[i])} tokens)`);
-      const summarizePrompt = `
-        Summarize this story chunk concisely (200-400 words), preserving key plot, characters, tone, and details. Focus on narrative flow.
-        ${customPrompt ? `Additional instructions: ${customPrompt}` : ''}
-        Chunk ${i + 1}/${chunks.length}: ${chunks[i]}
-      `;
-      const summary = await generateWithModel(summarizePrompt, model);
-      condensedDraft += summary + ' ';
+    if (chunkIndex === undefined || totalChunks === undefined) {
+      return res.status(400).json({ error: 'chunkIndex and totalChunks required' });
     }
-    console.log(`[Backend] Condensed draft complete: ${condensedDraft.slice(0, 200)}... (~${estimateTokens(condensedDraft)} tokens)`);
-    res.json({ condensedDraft });
+
+    console.log(`[Backend] Summarizing chunk ${chunkIndex + 1}/${totalChunks} (~${estimateTokens(draft)} tokens)`);
+    const summarizePrompt = `
+      Summarize this story chunk concisely (200-400 words), preserving key plot, characters, tone, and details. Focus on narrative flow.
+      ${customPrompt ? `Additional instructions: ${customPrompt}` : ''}
+      Chunk ${chunkIndex + 1}/${totalChunks}: ${draft}
+    `;
+    const summary = await generateWithModel(summarizePrompt, model);
+    res.json({ condensedChunk: summary, chunkIndex, totalChunks });
   } catch (error: any) {
     console.error(`[Backend] Summarization error: ${error.message || error}`);
     res.status(500).json({ error: `Summarization failed: ${error.message || 'Unknown error'}` });
+  }
+});
+
+app.post('/api/extract-key-elements', async (req, res) => {
+  try {
+    const { condensedDraft, model, customPrompt } = req.body;
+    if (!condensedDraft) return res.status(400).json({ error: 'Condensed draft required' });
+
+    console.log(`[Backend] Extracting key elements (~${estimateTokens(condensedDraft)} tokens)`);
+    const extractPrompt = `
+      Extract key elements from this condensed novel draft:
+      - Characters: List main characters as objects with fields: name, gender, role, traits, and optional affiliations (e.g., {"name": "Character A", "gender": "female", "role": "heroic", "traits": "inquisitor", "affiliations": "Guild"}).
+      - Key events: List 5-10 major events in chronological order as strings.
+      - Timeline: List timeline points as strings (e.g., "Day 1: Arrival").
+      - Unique details: List 5-10 unique world-building or plot elements as strings (e.g., "ancient artifact").
+      - Main story key lines: List 3-5 central plot threads as strings.
+      ${customPrompt ? `Additional instructions: ${customPrompt}` : ''}
+      Output as valid JSON: { "characters": [{...},...], "keyEvents": [...], "timeline": [...], "uniqueDetails": [...], "mainStoryLines": [...] }.
+      Condensed Draft: ${condensedDraft.substring(0, 10000)}... (trimmed)
+    `;
+    const extractText = await generateWithModel(extractPrompt, model);
+    const cleanedText = cleanJsonResponse(extractText);
+    let keyElements;
+    try {
+      keyElements = JSON.parse(cleanedText);
+      if (
+        !Array.isArray(keyElements.characters) ||
+        !Array.isArray(keyElements.keyEvents) ||
+        !Array.isArray(keyElements.timeline) ||
+        !Array.isArray(keyElements.uniqueDetails) ||
+        !Array.isArray(keyElements.mainStoryLines)
+      ) {
+        throw new Error('Incomplete key elements structure');
+      }
+      keyElements.characters = keyElements.characters.map((char: any, idx: number) => ({
+        name: char.name || `Character ${idx + 1}`,
+        gender: char.gender || 'Unknown',
+        role: char.role || 'Unknown',
+        traits: char.traits || 'None',
+        affiliations: char.affiliations || '',
+      }));
+      if (keyElements.characters.some((char: any) => !char.name || !char.gender || !char.role || !char.traits)) {
+        throw new Error('Invalid character structure');
+      }
+    } catch (parseError: any) {
+      console.error(`[Backend] JSON parse error: ${parseError.message}, raw response: ${cleanedText.slice(0, 500)}...`);
+      console.log(`[Backend] Retrying with stricter prompt...`);
+      const strictPrompt = `
+        Extract key elements from this condensed novel draft as valid JSON:
+        - Characters: Array of objects with name, gender, role, traits, affiliations (e.g., {"name": "Character A", "gender": "female", "role": "heroic", "traits": "inquisitor", "affiliations": "Guild"}).
+        - Key events: Array of 5-10 strings.
+        - Timeline: Array of strings (e.g., "Day 1: Arrival").
+        - Unique details: Array of 5-10 strings.
+        - Main story key lines: Array of 3-5 strings.
+        ${customPrompt ? `Additional instructions: ${customPrompt}` : ''}
+        Output strictly JSON: { "characters": [{...},...], "keyEvents": [...], "timeline": [...], "uniqueDetails": [...], "mainStoryLines": [...] }.
+        Draft: ${condensedDraft.substring(0, 10000)}...
+      `;
+      const retryText = await generateWithModel(strictPrompt, model);
+      const retryCleaned = cleanJsonResponse(retryText);
+      try {
+        keyElements = JSON.parse(retryCleaned);
+        keyElements.characters = keyElements.characters.map((char: any, idx: number) => ({
+          name: char.name || `Character ${idx + 1}`,
+          gender: char.gender || 'Unknown',
+          role: char.role || 'Unknown',
+          traits: char.traits || 'None',
+          affiliations: char.affiliations || '',
+        }));
+        if (
+          !Array.isArray(keyElements.characters) ||
+          !Array.isArray(keyElements.keyEvents) ||
+          !Array.isArray(keyElements.timeline) ||
+          !Array.isArray(keyElements.uniqueDetails) ||
+          !Array.isArray(keyElements.mainStoryLines) ||
+          keyElements.characters.some((char: any) => !char.name || !char.gender || !char.role || !char.traits)
+        ) {
+          throw new Error('Invalid structure in retry');
+        }
+      } catch (retryError: any) {
+        console.error(`[Backend] Retry JSON parse error: ${retryError.message}, raw response: ${retryCleaned.slice(0, 500)}...`);
+        throw Object.assign(new Error(`Invalid JSON response: ${retryError.message}`), { rawResponse: retryCleaned });
+      }
+    }
+    console.log(`[Backend] Extracted key elements: ${JSON.stringify(keyElements, null, 2).slice(0, 200)}...`);
+    res.json({ keyElements });
+  } catch (error: any) {
+    console.error(`[Backend] Key elements extraction error: ${error.message || error}, raw response: ${error.rawResponse || 'N/A'}`);
+    res.status(500).json({ error: `Key elements extraction failed: ${error.message || 'Unknown error'}`, rawResponse: error.rawResponse || '' });
   }
 });
 
@@ -165,7 +262,7 @@ app.post('/api/expand-chapter', async (req, res) => {
       previousContext = 'Previous Chapters Context:\n';
       previousChapters.forEach((ch: { title: string; summary: string }, idx: number) => {
         if (idx < chapterIndex) {
-          previousContext += `Chapter ${idx + 1}: ${ch.title}\nSummary: ${ch.summary}\nKey Details: Maintain continuity with prior events and characters (e.g., Inquisitor Valeria is female, Captain Zorath is male).\n\n`;
+          previousContext += `Chapter ${idx + 1}: ${ch.title}\nSummary: ${ch.summary}\nKey Details: Maintain continuity with prior events and characters.\n\n`;
         }
       });
       // Truncate to avoid token overflow
@@ -179,7 +276,7 @@ app.post('/api/expand-chapter', async (req, res) => {
       : '';
 
     const expandPrompt = `
-      Expand this chapter into a detailed, coherent narrative (800-1500 words).
+      Expand and this chapter as continution of previous context and into a detailed, coherent narrative (800-1500 words).
       Use vivid, immersive language matching the original draft's style/tone. Ensure plot continuity.
       ${previousContext ? `${previousContext}\n` : ''}
       ${finaleInstruction ? `${finaleInstruction}\n` : ''}

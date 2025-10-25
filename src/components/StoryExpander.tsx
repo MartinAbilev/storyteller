@@ -1,9 +1,27 @@
 import React, { useState, useEffect } from 'react';
 
+interface Character {
+  name: string;
+  gender: string;
+  role: string;
+  traits: string;
+  affiliations?: string;
+}
+
+interface KeyElements {
+  characters: Character[];
+  keyEvents: string[];
+  timeline: string[];
+  uniqueDetails: string[];
+  mainStoryLines: string[];
+}
+
 interface Chapter {
   title: string;
   summary: string;
-  details?: string;
+  keyEvents?: string[];
+  characterTraits?: string[];
+  timeline?: string;
   expansionCount?: number;
   customPrompt?: string;
 }
@@ -12,12 +30,13 @@ const LOCAL_STORAGE_KEY = 'storyExpanderProgress';
 
 const StoryExpander: React.FC = () => {
   const [draft, setDraft] = useState<string>('');
-  const [model, setModel] = useState<string>('gpt-5'); // Default to GPT-5
+  const [model, setModel] = useState<string>('gpt-5');
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [status, setStatus] = useState<string>('');
   const [error, setError] = useState<string>('');
   const [rawError, setRawError] = useState<string>('');
   const [condensedDraft, setCondensedDraft] = useState<string>('');
+  const [keyElements, setKeyElements] = useState<KeyElements | null>(null);
   const [summaryPrompt, setSummaryPrompt] = useState<string>('');
   const [editingSummaryPrompt, setEditingSummaryPrompt] = useState<boolean>(false);
   const [chapters, setChapters] = useState<Chapter[]>([]);
@@ -30,7 +49,6 @@ const StoryExpander: React.FC = () => {
   const [draftHash, setDraftHash] = useState<string>('');
   const [chapterLoading, setChapterLoading] = useState<number | null>(null);
 
-  // Model options
   const modelOptions = [
     { value: 'gpt-4o-mini', label: 'GPT-4o-mini (Fast & Cheap)' },
     { value: 'gpt-4o', label: 'GPT-4o (Balanced)' },
@@ -38,25 +56,52 @@ const StoryExpander: React.FC = () => {
     { value: 'gpt-5-mini', label: 'GPT-5-mini (Efficient)' },
   ];
 
-  const totalSteps = 3 + (chapters.length || 6) + expansionCounts.reduce((sum, count) => sum + count, 0);
-  const completedSteps = currentStep + (currentStep === 2 ? currentChapterIndex : 0) + expansionCounts.reduce((sum, count) => sum + count, 0);
+  const totalSteps = 4 + (chapters.length || 6) + expansionCounts.reduce((sum, count) => sum + count, 0);
+  const completedSteps = currentStep + (currentStep === 3 ? currentChapterIndex : 0) + expansionCounts.reduce((sum, count) => sum + count, 0);
   const progressPercent = ((completedSteps / totalSteps) * 100).toFixed(1);
+
+  const chunkText = (text: string, maxBytes = 50000): string[] => {
+    const encoder = new TextEncoder();
+    const chunks: string[] = [];
+    let currentChunk = '';
+    let currentBytes = 0;
+    const sentences = text.match(/[^.!?]+[.!?]+/gs) || [text];
+    console.log(`[Frontend] chunkText: Processing ${sentences.length} sentences`);
+    for (const sentence of sentences) {
+      const sentenceBytes = encoder.encode(sentence).length;
+      if (currentBytes + sentenceBytes > maxBytes) {
+        if (currentChunk) {
+          chunks.push(currentChunk.trim());
+          console.log(`[Frontend] chunkText: Created chunk ${chunks.length} (~${encoder.encode(currentChunk).length} bytes)`);
+        }
+        currentChunk = sentence;
+        currentBytes = sentenceBytes;
+      } else {
+        currentChunk += ' ' + sentence;
+        currentBytes += sentenceBytes;
+      }
+    }
+    if (currentChunk) {
+      chunks.push(currentChunk.trim());
+      console.log(`[Frontend] chunkText: Created final chunk ${chunks.length} (~${encoder.encode(currentChunk).length} bytes)`);
+    }
+    console.log(`[Frontend] chunkText: Generated ${chunks.length} chunks`);
+    return chunks;
+  };
 
   const hashDraft = async (text: string): Promise<string> => {
     if (!text) return '';
     try {
-      // Check if running in a secure context
       const isSecureContext = window.isSecureContext || (window.location.hostname === 'localhost' || window.location.protocol === 'https:');
       console.log(`[Frontend] hashDraft: Running in secure context: ${isSecureContext}, hostname: ${window.location.hostname}, protocol: ${window.location.protocol}`);
 
       if (!window.crypto?.subtle) {
         console.warn('[Frontend] hashDraft: Web Crypto API (crypto.subtle) unavailable, using fallback hash');
-        // Simple fallback hash (not cryptographically secure, but sufficient for progress tracking)
         let hash = 0;
         for (let i = 0; i < text.length; i++) {
           const char = text.charCodeAt(i);
           hash = ((hash << 5) - hash) + char;
-          hash = hash & hash; // Convert to 32-bit integer
+          hash = hash & hash;
         }
         return Math.abs(hash).toString(16).padStart(8, '0');
       }
@@ -68,7 +113,6 @@ const StoryExpander: React.FC = () => {
       return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
     } catch (error: any) {
       console.error(`[Frontend] hashDraft error: ${error.message || error}`);
-      // Fallback hash on error
       let hash = 0;
       for (let i = 0; i < text.length; i++) {
         const char = text.charCodeAt(i);
@@ -81,12 +125,18 @@ const StoryExpander: React.FC = () => {
 
   useEffect(() => {
     const loadProgress = async () => {
+      if (!draft) {
+        console.log('[Frontend] loadProgress: Skipping hashDraft, draft is empty');
+        setStatus('Enter a draft to start or paste one to continue.');
+        return;
+      }
       const stored = localStorage.getItem(LOCAL_STORAGE_KEY);
-      if (stored && draft) {
+      if (stored) {
         const progress = JSON.parse(stored);
         const currentHash = await hashDraft(draft);
         if (progress.draftHash === currentHash) {
           setCondensedDraft(progress.condensedDraft || '');
+          setKeyElements(progress.keyElements || null);
           setSummaryPrompt(progress.summaryPrompt || '');
           setChapters(progress.chapters || []);
           setExpandedChapters(progress.expandedChapters || []);
@@ -95,11 +145,13 @@ const StoryExpander: React.FC = () => {
           setCurrentStep(progress.currentStep || 0);
           setCurrentChapterIndex(progress.currentChapterIndex || 0);
           setDraftHash(currentHash);
-          setModel(progress.model || 'gpt-5'); // Load saved model
+          setModel(progress.model || 'gpt-5');
           setStatus('Loaded saved progress—click Continue or inspect results.');
         } else {
           setStatus('Draft changed—clear progress or start fresh.');
         }
+      } else {
+        setStatus('No saved progress found—start fresh with your draft.');
       }
     };
     loadProgress();
@@ -109,6 +161,7 @@ const StoryExpander: React.FC = () => {
     const progress = {
       draftHash,
       condensedDraft,
+      keyElements,
       summaryPrompt,
       chapters,
       expandedChapters,
@@ -124,6 +177,7 @@ const StoryExpander: React.FC = () => {
   const clearProgress = () => {
     localStorage.removeItem(LOCAL_STORAGE_KEY);
     setCondensedDraft('');
+    setKeyElements(null);
     setSummaryPrompt('');
     setChapters([]);
     setExpandedChapters([]);
@@ -131,6 +185,7 @@ const StoryExpander: React.FC = () => {
     setChapterPrompts([]);
     setCurrentStep(0);
     setCurrentChapterIndex(0);
+    setDraftHash('');
     setStatus('Progress cleared—start over.');
     setError('');
     setRawError('');
@@ -143,24 +198,31 @@ const StoryExpander: React.FC = () => {
     setRawError('');
     setStatus('Regenerating summary with new prompt...');
     try {
-      const response = await fetch('/api/summarize-draft', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ draft, model, customPrompt: summaryPrompt }),
-      });
-      if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.error || 'Summarize failed');
+      const chunks = chunkText(draft);
+      let condensedDraft = '';
+      for (let i = 0; i < chunks.length; i++) {
+        console.log(`[Frontend] Processing chunk ${i + 1}/${chunks.length}`);
+        const response = await fetch('/api/summarize-draft', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ draft: chunks[i], model, customPrompt: summaryPrompt, chunkIndex: i, totalChunks: chunks.length }),
+        });
+        if (!response.ok) {
+          const errData = await response.json();
+          throw new Error(errData.error || `Summarization failed for chunk ${i + 1}`);
+        }
+        const data = await response.json();
+        condensedDraft += data.condensedChunk + ' ';
       }
-      const data = await response.json();
-      setCondensedDraft(data.condensedDraft);
+      setCondensedDraft(condensedDraft.trim());
+      setKeyElements(null);
       setChapters([]);
       setExpandedChapters([]);
       setExpansionCounts([]);
       setChapterPrompts([]);
-      setCurrentStep(1);
+      setCurrentStep(0);
       setCurrentChapterIndex(0);
-      setStatus('Summary regenerated—proceeding to outline.');
+      setStatus('Summary regenerated—proceeding to extract key elements.');
       saveProgress();
     } catch (err: any) {
       setError(`Regeneration failed: ${err.message || 'Unknown error'}. Try again.`);
@@ -177,44 +239,73 @@ const StoryExpander: React.FC = () => {
     try {
       if (currentStep === 0) {
         setStatus('Step 1: Summarizing draft chunks...');
-        const response = await fetch('/api/summarize-draft', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ draft, model, customPrompt: summaryPrompt }),
-        });
-        if (!response.ok) {
-          const errData = await response.json();
-          throw new Error(errData.error || 'Summarize failed');
+        const chunks = chunkText(draft);
+        let condensedDraft = '';
+        for (let i = 0; i < chunks.length; i++) {
+          console.log(`[Frontend] Processing chunk ${i + 1}/${chunks.length}`);
+          const response = await fetch('/api/summarize-draft', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ draft: chunks[i], model, customPrompt: summaryPrompt, chunkIndex: i, totalChunks: chunks.length }),
+          });
+          if (!response.ok) {
+            const errData = await response.json();
+            throw new Error(errData.error || `Summarization failed for chunk ${i + 1}`);
+          }
+          const data = await response.json();
+          condensedDraft += data.condensedChunk + ' ';
         }
-        const data = await response.json();
-        setCondensedDraft(data.condensedDraft);
+        setCondensedDraft(condensedDraft.trim());
         setCurrentStep(1);
         setStatus('Step 1 complete: Condensed draft ready (see below).');
         saveProgress();
       } else if (currentStep === 1) {
-        setStatus('Step 2: Generating chapter outline...');
-        const response = await fetch('/api/generate-outline', {
+        setStatus('Step 2: Extracting key elements...');
+        const response = await fetch('/api/extract-key-elements', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ condensedDraft, model, customPrompt: summaryPrompt }),
         });
         if (!response.ok) {
           const errData = await response.json();
+          throw Object.assign(new Error(errData.error || 'Key elements extraction failed'), { rawResponse: errData.rawResponse || '' });
+        }
+        const data = await response.json();
+        setKeyElements(data.keyElements);
+        setCurrentStep(2);
+        setStatus('Step 2 complete: Key elements extracted (see below).');
+        saveProgress();
+      } else if (currentStep === 2) {
+        setStatus('Step 3: Generating chapter outline...');
+        const response = await fetch('/api/generate-outline', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ condensedDraft, model, customPrompt: summaryPrompt, keyElements }),
+        });
+        if (!response.ok) {
+          const errData = await response.json();
           throw Object.assign(new Error(errData.error || 'Outline failed'), { rawResponse: errData.rawResponse || '' });
         }
         const data = await response.json();
-        setChapters(data.chapters);
-        setExpandedChapters(new Array(data.chapters.length).fill(''));
-        setExpansionCounts(new Array(data.chapters.length).fill(0));
-        setChapterPrompts(new Array(data.chapters.length).fill(''));
-        setCurrentStep(2);
+        const validatedChapters = data.chapters.map((ch: Chapter) => ({
+          title: ch.title || 'Untitled Chapter',
+          summary: ch.summary || 'No summary available.',
+          keyEvents: Array.isArray(ch.keyEvents) ? ch.keyEvents : [],
+          characterTraits: Array.isArray(ch.characterTraits) ? ch.characterTraits : [],
+          timeline: ch.timeline || 'Unknown timeline',
+        }));
+        setChapters(validatedChapters);
+        setExpandedChapters(new Array(validatedChapters.length).fill(''));
+        setExpansionCounts(new Array(validatedChapters.length).fill(0));
+        setChapterPrompts(new Array(validatedChapters.length).fill(''));
+        setCurrentStep(3);
         setCurrentChapterIndex(0);
-        setStatus('Step 2 complete: Outline generated (see below).');
+        setStatus('Step 3 complete: Outline generated (see below).');
         saveProgress();
-      } else if (currentStep === 2 && currentChapterIndex < chapters.length) {
+      } else if (currentStep === 3 && currentChapterIndex < chapters.length) {
         const chapter = chapters[currentChapterIndex];
         const customPrompt = chapterPrompts[currentChapterIndex] || '';
-        setStatus(`Step 3: Expanding chapter ${currentChapterIndex + 1}/${chapters.length} ("${chapter.title}")...`);
+        setStatus(`Step 4: Expanding chapter ${currentChapterIndex + 1}/${chapters.length} ("${chapter.title}")...`);
         setChapterLoading(currentChapterIndex);
         const response = await fetch('/api/expand-chapter', {
           method: 'POST',
@@ -223,11 +314,15 @@ const StoryExpander: React.FC = () => {
             condensedDraft,
             title: chapter.title,
             summary: chapter.summary,
+            keyEvents: chapter.keyEvents || [],
+            characterTraits: chapter.characterTraits || [],
+            timeline: chapter.timeline || 'Unknown timeline',
             model,
             customPrompt,
             chapterIndex: currentChapterIndex,
             previousChapters: chapters.slice(0, currentChapterIndex),
             totalChapters: chapters.length,
+            keyElements,
           }),
         });
         if (!response.ok) {
@@ -292,12 +387,16 @@ const StoryExpander: React.FC = () => {
           condensedDraft,
           title: chapter.title,
           summary: chapter.summary,
+          keyEvents: chapter.keyEvents || [],
+          characterTraits: chapter.characterTraits || [],
+          timeline: chapter.timeline || 'Unknown timeline',
           existingDetails: expandedChapters[chapterIndex],
           model,
           customPrompt,
           chapterIndex,
           previousChapters: chapters.slice(0, chapterIndex),
           totalChapters: chapters.length,
+          keyElements,
         }),
       });
       if (!response.ok) {
@@ -347,7 +446,7 @@ const StoryExpander: React.FC = () => {
 
   useEffect(() => {
     console.log(`[Frontend] useEffect triggered: step=${currentStep}, chapterIndex=${currentChapterIndex}, chapters=${chapters.length}, loading=${isLoading}`);
-    if (isLoading || (currentStep === 2 && currentChapterIndex >= chapters.length)) return;
+    if (isLoading || (currentStep === 3 && currentChapterIndex >= chapters.length)) return;
     if (currentStep > 0 || condensedDraft) {
       processStep();
     }
@@ -394,7 +493,7 @@ const StoryExpander: React.FC = () => {
           <button
             type="button"
             onClick={handleContinue}
-            disabled={isLoading || (currentStep === 2 && currentChapterIndex >= chapters.length)}
+            disabled={isLoading || (currentStep === 3 && currentChapterIndex >= chapters.length)}
             className="px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50"
           >
             Continue
@@ -456,7 +555,7 @@ const StoryExpander: React.FC = () => {
               <textarea
                 value={summaryPrompt}
                 onChange={(e) => setSummaryPrompt(e.target.value)}
-                placeholder="Enter custom prompt for summarization (e.g., 'Character A is female, Character B is male, emphasize grimdark themes')"
+                placeholder="Enter custom prompt for summarization (e.g., 'Character A is female, Character B is male, emphasize dramatic themes')"
                 className="w-full p-2 border border-gray-300 rounded-md"
               />
               <button
@@ -475,9 +574,42 @@ const StoryExpander: React.FC = () => {
         </details>
       )}
 
-      {chapters.length > 0 && (
+      {keyElements && (
         <details open={currentStep === 2} className="bg-white p-6 rounded-lg shadow-md">
-          <summary className="cursor-pointer font-medium text-blue-600 mb-2">Step 2: Chapter Outlines</summary>
+          <summary className="cursor-pointer font-medium text-blue-600 mb-2">Step 2: Key Elements</summary>
+          <div className="space-y-4">
+            <h3 className="font-semibold text-gray-800">Characters</h3>
+            <ul className="list-disc pl-5">
+              {keyElements.characters.map((char, idx) => (
+                <li key={idx}>
+                  {char.name}: {char.gender}, {char.role}, {char.traits}
+                  {char.affiliations ? `, affiliated with ${char.affiliations}` : ''}
+                </li>
+              ))}
+            </ul>
+            <h3 className="font-semibold text-gray-800">Key Events</h3>
+            <ul className="list-disc pl-5">
+              {keyElements.keyEvents.map((event, idx) => <li key={idx}>{event}</li>)}
+            </ul>
+            <h3 className="font-semibold text-gray-800">Timeline</h3>
+            <ul className="list-disc pl-5">
+              {keyElements.timeline.map((time, idx) => <li key={idx}>{time}</li>)}
+            </ul>
+            <h3 className="font-semibold text-gray-800">Unique Details</h3>
+            <ul className="list-disc pl-5">
+              {keyElements.uniqueDetails.map((detail, idx) => <li key={idx}>{detail}</li>)}
+            </ul>
+            <h3 className="font-semibold text-gray-800">Main Story Lines</h3>
+            <ul className="list-disc pl-5">
+              {keyElements.mainStoryLines.map((line, idx) => <li key={idx}>{line}</li>)}
+            </ul>
+          </div>
+        </details>
+      )}
+
+      {chapters.length > 0 && (
+        <details open={currentStep === 3} className="bg-white p-6 rounded-lg shadow-md">
+          <summary className="cursor-pointer font-medium text-blue-600 mb-2">Step 3: Chapter Outlines</summary>
           <ul className="space-y-4 mt-4">
             {chapters.map((chapter, idx) => (
               <li key={idx} className="border-l-4 border-blue-500 pl-4">
@@ -512,6 +644,24 @@ const StoryExpander: React.FC = () => {
                   <p className="text-sm text-gray-600 italic mb-2">Custom Prompt: {chapterPrompts[idx] || 'None'}</p>
                 )}
                 <p className="text-sm text-gray-600 italic">Summary: {chapter.summary}</p>
+                <h4 className="font-medium">Key Events</h4>
+                <ul className="list-disc pl-5">
+                  {Array.isArray(chapter.keyEvents) && chapter.keyEvents.length > 0 ? (
+                    chapter.keyEvents.map((event, eIdx) => <li key={eIdx}>{event}</li>)
+                  ) : (
+                    <li>No key events available.</li>
+                  )}
+                </ul>
+                <h4 className="font-medium">Character Traits</h4>
+                <ul className="list-disc pl-5">
+                  {Array.isArray(chapter.characterTraits) && chapter.characterTraits.length > 0 ? (
+                    chapter.characterTraits.map((trait, tIdx) => <li key={tIdx}>{trait}</li>)
+                  ) : (
+                    <li>No character traits available.</li>
+                  )}
+                </ul>
+                <h4 className="font-medium">Timeline</h4>
+                <p>{chapter.timeline || 'No timeline available.'}</p>
               </li>
             ))}
           </ul>
@@ -519,8 +669,8 @@ const StoryExpander: React.FC = () => {
       )}
 
       {expandedChapters.some(ch => ch) && (
-        <details open={currentStep === 2} className="bg-white p-6 rounded-lg shadow-md">
-          <summary className="cursor-pointer font-medium text-blue-600 mb-2">Step 3: Expanded Chapters</summary>
+        <details open={currentStep === 3} className="bg-white p-6 rounded-lg shadow-md">
+          <summary className="cursor-pointer font-medium text-blue-600 mb-2">Step 4: Expanded Chapters</summary>
           <div className="space-y-6">
             {chapters.map((chapter, idx) => (
               expandedChapters[idx] && (
@@ -562,11 +712,11 @@ const StoryExpander: React.FC = () => {
                       </button>
                     </div>
                   ) : (
-                    <p className="text-sm text-gray-600 italic mb-2">Custom Prompt: ${chapterPrompts[idx] || 'None'}</p>
+                    <p className="text-sm text-gray-600 italic mb-2">Custom Prompt: {chapterPrompts[idx] || 'None'}</p>
                   )}
-                  <p className="text-sm text-gray-600 italic mb-2">Summary: ${chapter.summary}</p>
+                  <p className="text-sm text-gray-600 italic mb-2">Summary: {chapter.summary}</p>
                   <div className="prose max-w-none text-gray-700">
-                    <p>${expandedChapters[idx]}</p>
+                    <p>{expandedChapters[idx]}</p>
                   </div>
                 </div>
               )
@@ -576,7 +726,7 @@ const StoryExpander: React.FC = () => {
       )}
 
       {fullStory && chapters.some((_, idx) => expandedChapters[idx]) && (
-        <details open={currentStep === 2 && currentChapterIndex >= chapters.length} className="bg-white p-6 rounded-lg shadow-md">
+        <details open={currentStep === 3 && currentChapterIndex >= chapters.length} className="bg-white p-6 rounded-lg shadow-md">
           <summary className="cursor-pointer font-medium text-blue-600 mb-2">Final Expanded Story</summary>
           <div
             className="prose max-w-none prose-headings:text-lg prose-headings:font-semibold prose-p:leading-relaxed"
