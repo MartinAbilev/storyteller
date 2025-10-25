@@ -184,8 +184,10 @@ app.post('/api/expand-chapter', async (req, res) => {
       ${previousContext ? `${previousContext}\n` : ''}
       ${finaleInstruction ? `${finaleInstruction}\n` : ''}
       ${customPrompt ? `Additional instructions: ${customPrompt}` : ''}
-      Reference full context: ${condensedDraft.substring(0, 5000)}...
+      take into acount full context: ${condensedDraft.substring(0, 5000)}...
       Title: ${title}. Summary: ${summary}
+
+      make chapters begining diferent from previous chapters. dont make same begining of chapter as previous
     `;
     const details = await generateWithModel(expandPrompt, model);
     console.log(`[Backend] Expanded chapter "${title}": ${details.slice(0, 200)}...`);
@@ -196,51 +198,6 @@ app.post('/api/expand-chapter', async (req, res) => {
   }
 });
 
-app.post('/api/expand-chapter-more', async (req, res) => {
-  try {
-    const { condensedDraft, title, summary, existingDetails, model, customPrompt, chapterIndex, previousChapters, totalChapters } = req.body;
-    if (!title || !summary || !existingDetails) return res.status(400).json({ error: 'Title, summary, and existing details required' });
-
-    console.log(`[Backend] Expanding chapter "${title}" further (index: ${chapterIndex}, total: ${totalChapters})`);
-    // Build previous chapters context if chapterIndex > 0
-    let previousContext = '';
-    if (chapterIndex > 0 && previousChapters && Array.isArray(previousChapters)) {
-      previousContext = 'Previous Chapters Context:\n';
-      previousChapters.forEach((ch: { title: string; summary: string }, idx: number) => {
-        if (idx < chapterIndex) {
-          previousContext += `Chapter ${idx + 1}: ${ch.title}\nSummary: ${ch.summary}\nKey Details: Maintain continuity with prior events and characters (e.g., Inquisitor Valeria is female, Captain Zorath is male).\n\n`;
-        }
-      });
-      // Truncate to avoid token overflow
-      previousContext = previousContext.substring(0, 1000 * chapterIndex);
-    }
-
-    // Add finale instruction for the last chapter
-    const isFinalChapter = chapterIndex === totalChapters - 1;
-    const finaleInstruction = isFinalChapter
-      ? 'This is the final chapter. Conclude the story with a climactic, cohesive ending, resolving key plotlines and character arcs (e.g., Inquisitor Valeria’s mission, Captain Zorath’s fate) while maintaining the grimdark tone.'
-      : '';
-
-    const expandMorePrompt = `
-      Expand this existing chapter narrative by adding 500-1000 words, continuing the story seamlessly.
-      Maintain the same style, tone, and plot continuity as the existing text.
-      ${previousContext ? `${previousContext}\n` : ''}
-      ${finaleInstruction ? `${finaleInstruction}\n` : ''}
-      ${customPrompt ? `Additional instructions: ${customPrompt}` : ''}
-      Reference full context: ${condensedDraft.substring(0, 5000)}...
-      Title: ${title}
-      Summary: ${summary}
-      Existing Narrative: ${existingDetails.substring(0, 10000)}... (trimmed)
-    `;
-    const additionalDetails = await generateWithModel(expandMorePrompt, model);
-    const updatedDetails = existingDetails + '\n\n' + additionalDetails;
-    console.log(`[Backend] Further expanded chapter "${title}": ${updatedDetails.slice(0, 200)}...`);
-    res.json({ details: updatedDetails });
-  } catch (error: any) {
-    console.error(`[Backend] Further expansion error: ${error.message || error}`);
-    res.status(500).json({ error: `Further expansion failed: ${error.message || 'Unknown error'}` });
-  }
-});
 
 app.listen(PORT, () => {
   console.log(`[Backend] Running on http://localhost:${PORT} (OpenAI-only with finale instruction)`);
