@@ -314,9 +314,9 @@ app.post('/api/expand-chapter', async (req, res) => {
     if (chapterIndex > 0 && previousChapters && Array.isArray(previousChapters)) {
       previousContext = 'Previous Chapters Context:\n';
       previousChapters.forEach((ch: { title: string; summary: string; keyEvents: string[]; characterTraits: string[]; timeline: string }, idx: number) => {
-        if (idx < chapterIndex) {
-          previousContext += `Chapter ${idx + 1}: ${ch.title}\nSummary: ${ch.summary}\nKey Events: ${ch.keyEvents.join(', ')}\nCharacter Traits: ${ch.characterTraits.join(', ')}\nTimeline: ${ch.timeline}\n\n`;
-        }
+        // if (idx < chapterIndex) {
+        //   previousContext += `Chapter ${idx + 1}: ${ch.title}\nSummary: ${ch.summary}\nKey Events: ${ch.keyEvents.join(', ')}\nCharacter Traits: ${ch.characterTraits.join(', ')}\nTimeline: ${ch.timeline}\n\n`;
+        // }
       });
       previousContext = previousContext.substring(0, 1000 * chapterIndex);
     }
