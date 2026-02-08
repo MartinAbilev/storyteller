@@ -27,6 +27,7 @@ interface Chapter {
 }
 
 const LOCAL_STORAGE_KEY = 'storyExpanderProgress';
+const PROMPTS_STORAGE_KEY = 'storyExpanderPrompts';
 
 const StoryExpander: React.FC = () => {
   const [draft, setDraft] = useState<string>('');
@@ -39,6 +40,8 @@ const StoryExpander: React.FC = () => {
   const [keyElements, setKeyElements] = useState<KeyElements | null>(null);
   const [summaryPrompt, setSummaryPrompt] = useState<string>('');
   const [editingSummaryPrompt, setEditingSummaryPrompt] = useState<boolean>(false);
+  const [outlinePrompt, setOutlinePrompt] = useState<string>('');
+  const [editingOutlinePrompt, setEditingOutlinePrompt] = useState<boolean>(false);
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [expandedChapters, setExpandedChapters] = useState<string[]>([]);
   const [expansionCounts, setExpansionCounts] = useState<number[]>([]);
@@ -125,11 +128,25 @@ const StoryExpander: React.FC = () => {
 
   useEffect(() => {
     const loadProgress = async () => {
+      // Load saved prompts first so they persist across refresh even without a draft
+      try {
+        const promptsRaw = localStorage.getItem(PROMPTS_STORAGE_KEY);
+        if (promptsRaw) {
+          const prompts = JSON.parse(promptsRaw);
+          setSummaryPrompt(prompts.summaryPrompt || '');
+          setOutlinePrompt(prompts.outlinePrompt || '');
+          setModel(prompts.model || (model || 'gpt-5-mini'));
+        }
+      } catch (err) {
+        console.warn('[Frontend] loadProgress: failed to load prompts', err);
+      }
+
       if (!draft) {
-        console.log('[Frontend] loadProgress: Skipping hashDraft, draft is empty');
+        console.log('[Frontend] loadProgress: Skipping draft-based progress, draft is empty');
         setStatus('Enter a draft to start or paste one to continue.');
         return;
       }
+
       const stored = localStorage.getItem(LOCAL_STORAGE_KEY);
       if (stored) {
         const progress = JSON.parse(stored);
@@ -137,7 +154,8 @@ const StoryExpander: React.FC = () => {
         if (progress.draftHash === currentHash) {
           setCondensedDraft(progress.condensedDraft || '');
           setKeyElements(progress.keyElements || null);
-          setSummaryPrompt(progress.summaryPrompt || '');
+          setSummaryPrompt(progress.summaryPrompt || (summaryPrompt || ''));
+          setOutlinePrompt(progress.outlinePrompt || (outlinePrompt || ''));
           setChapters(progress.chapters || []);
           setExpandedChapters(progress.expandedChapters || []);
           setExpansionCounts(progress.expansionCounts || []);
@@ -145,7 +163,7 @@ const StoryExpander: React.FC = () => {
           setCurrentStep(progress.currentStep || 0);
           setCurrentChapterIndex(progress.currentChapterIndex || 0);
           setDraftHash(currentHash);
-          setModel(progress.model || 'gpt-5-mini');
+          setModel(progress.model || model || 'gpt-5-mini');
           setStatus('Loaded saved progress—click Continue or inspect results.');
         } else {
           setStatus('Draft changed—clear progress or start fresh.');
@@ -157,12 +175,23 @@ const StoryExpander: React.FC = () => {
     loadProgress();
   }, [draft]);
 
+  // Persist summary/outline prompts (and model) separately so prompts survive Vite refreshes
+  useEffect(() => {
+    try {
+      const toSave = { summaryPrompt, outlinePrompt, model };
+      localStorage.setItem(PROMPTS_STORAGE_KEY, JSON.stringify(toSave));
+    } catch (err) {
+      console.warn('[Frontend] Failed to save prompts to localStorage', err);
+    }
+  }, [summaryPrompt, outlinePrompt, model]);
+
   const saveProgress = () => {
     const progress = {
       draftHash,
       condensedDraft,
       keyElements,
       summaryPrompt,
+      outlinePrompt,
       chapters,
       expandedChapters,
       expansionCounts,
@@ -492,6 +521,66 @@ const StoryExpander: React.FC = () => {
     saveProgress();
   };
 
+  const handleEditOutlinePrompt = () => {
+    setEditingOutlinePrompt(true);
+  };
+
+  const handleSaveOutlinePrompt = () => {
+    setEditingOutlinePrompt(false);
+    if (currentStep > 1 && condensedDraft) {
+      setStatus('Outline prompt updated—click "Regenerate Outline" to apply.');
+    }
+    saveProgress();
+  };
+
+  const handleRegenerateOutline = async () => {
+    if (isLoading) return;
+    if (!condensedDraft) {
+      setError('Cannot regenerate outline: condensed draft is empty.');
+      return;
+    }
+    if (!keyElements) {
+      setError('Cannot regenerate outline: key elements missing. Run Step 2 first.');
+      return;
+    }
+    setIsLoading(true);
+    setError('');
+    setRawError('');
+    setStatus('Regenerating chapter outline with custom prompt...');
+    try {
+      const response = await fetch('/api/generate-outline', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ condensedDraft, model, customPrompt: outlinePrompt || summaryPrompt, keyElements }),
+      });
+      if (!response.ok) {
+        const errData = await response.json();
+        throw Object.assign(new Error(errData.error || 'Outline regeneration failed'), { rawResponse: errData.rawResponse || '' });
+      }
+      const data = await response.json();
+      const validatedChapters = data.chapters.map((ch: Chapter) => ({
+        title: ch.title || 'Untitled Chapter',
+        summary: ch.summary || 'No summary available.',
+        keyEvents: Array.isArray(ch.keyEvents) ? ch.keyEvents : [],
+        characterTraits: Array.isArray(ch.characterTraits) ? ch.characterTraits : [],
+        timeline: ch.timeline || 'Unknown timeline',
+      }));
+      setChapters(validatedChapters);
+      setExpandedChapters(new Array(validatedChapters.length).fill(''));
+      setExpansionCounts(new Array(validatedChapters.length).fill(0));
+      setChapterPrompts(new Array(validatedChapters.length).fill(''));
+      setCurrentStep(3);
+      setCurrentChapterIndex(0);
+      setStatus('Outline regenerated — ready to expand chapters.');
+      saveProgress();
+    } catch (err: any) {
+      setError(`Outline regeneration failed: ${err.message || 'Unknown error'}`);
+      setRawError(err.rawResponse || '');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   useEffect(() => {
     console.log(`[Frontend] useEffect triggered: step=${currentStep}, chapterIndex=${currentChapterIndex}, chapters=${chapters.length}, loading=${isLoading}`);
     if (isLoading || (currentStep === 3 && currentChapterIndex >= chapters.length)) return;
@@ -658,25 +747,46 @@ const StoryExpander: React.FC = () => {
       {chapters.length > 0 && (
         <details open={currentStep === 3} className="bg-white p-6 rounded-lg shadow-md">
           <summary className="cursor-pointer font-medium text-blue-600 mb-2">Step 3: Chapter Outlines</summary>
+          <div className="flex justify-between items-center mb-4">
+            <div>
+              <h4 className="font-semibold text-gray-800">Outline Custom Prompt</h4>
+              {!editingOutlinePrompt ? (
+                <div className="flex items-center space-x-2">
+                  <p className="text-sm text-gray-600 italic mr-4">{outlinePrompt || summaryPrompt || 'No outline prompt set'}</p>
+                  <button onClick={handleEditOutlinePrompt} className="text-blue-600 hover:text-blue-800">Edit</button>
+                </div>
+              ) : (
+                <div>
+                  <textarea
+                    value={outlinePrompt}
+                    onChange={(e) => setOutlinePrompt(e.target.value)}
+                    placeholder="Enter custom prompt for outline generation (e.g., 'Focus on political intrigue')"
+                    className="w-full p-2 border border-gray-300 rounded-md mb-2"
+                  />
+                  <button onClick={handleSaveOutlinePrompt} className="px-3 py-1 bg-blue-600 text-white rounded-md">Save Prompt</button>
+                </div>
+              )}
+            </div>
+            <div>
+              <button
+                onClick={handleRegenerateOutline}
+                disabled={isLoading}
+                className="px-4 py-1 bg-yellow-600 text-white rounded-md hover:bg-yellow-700 disabled:opacity-50"
+              >
+                {isLoading ? 'Regenerating...' : 'Regenerate Outline'}
+              </button>
+            </div>
+          </div>
           <ul className="space-y-4 mt-4">
             {chapters.map((chapter, idx) => (
               <li key={idx} className="border-l-4 border-blue-500 pl-4">
                 <div className="flex justify-between items-center">
                   <h3 className="font-semibold text-gray-800">{chapter.title}</h3>
-                  <div className="flex items-center space-x-2">
-                    <button onClick={() => handleEditChapterPrompt(idx)} className="text-blue-600 hover:text-blue-800">
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                      </svg>
-                    </button>
-                    <button
-                      onClick={() => handleRegenerateChapter(idx)}
-                      disabled={chapterLoading !== null}
-                      className="px-3 py-1 bg-yellow-600 text-white rounded-md hover:bg-yellow-700 disabled:opacity-50 text-sm"
-                    >
-                      {chapterLoading === idx ? 'Regenerating...' : 'Regenerate'}
-                    </button>
-                  </div>
+                  <button onClick={() => handleEditChapterPrompt(idx)} className="text-blue-600 hover:text-blue-800">
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                    </svg>
+                  </button>
                 </div>
                 {editingChapterPrompt === idx ? (
                   <div className="mb-4">
