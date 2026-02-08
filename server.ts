@@ -469,7 +469,7 @@ app.post('/api/save-state', async (req, res) => {
   try {
     const state = req.body;
     if (!state) return res.status(400).json({ error: 'State JSON required in request body' });
-    const filePath = path.join(process.cwd(), 'story.json');
+    const filePath = path.join(process.cwd(), './dist/story.json');
     await fs.writeFile(filePath, JSON.stringify(state, null, 2), 'utf8');
     console.log(`[Backend] Saved state to ${filePath}`);
     return res.json({ ok: true, path: filePath });

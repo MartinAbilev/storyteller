@@ -55,6 +55,7 @@ const StoryExpander: React.FC = () => {
   const [currentChapterIndex, setCurrentChapterIndex] = useState<number>(0);
   const [draftHash, setDraftHash] = useState<string>('');
   const [chapterLoading, setChapterLoading] = useState<number | null>(null);
+  const [regenerateFromChapterIndex, setRegenerateFromChapterIndex] = useState<number | null>(null);
 
   // Helper function to get stored API key
   const getStoredApiKey = (): string => {
@@ -807,10 +808,23 @@ All four fields must be coherent and internally consistent.` : '';
     setIsLoading(true);
     setError('');
     setRawError('');
-    setStatus('Regenerating chapter outline with custom prompt...');
+    setStatus('Regenerating chapter outline with custom prompts...');
     try {
+      // Build per-chapter instructions string
+      const perChapterInstructions = chapterPrompts
+        .map((prompt, idx) => {
+          if (prompt && prompt.trim()) {
+            return `- Chapter ${idx + 1}: ${prompt}`;
+          }
+          return null;
+        })
+        .filter(Boolean)
+        .join('\n');
+
       // Ensure all chapter metadata fields (summary, key events, character traits, timeline) are regenerated holistically
       const enhancedCustomPrompt = `${outlinePrompt || summaryPrompt}
+
+${perChapterInstructions ? `Apply the following chapter-specific instructions:\n${perChapterInstructions}\n` : ''}
 
 CRITICAL: When applying the above instructions, you MUST regenerate ALL chapter metadata fields:
 - Update summaries to reflect the custom prompt modifications
@@ -843,42 +857,59 @@ All four fields must be coherent and internally consistent.`;
       const newLen = validatedChapters.length;
       const newExpanded = new Array(newLen).fill('');
       const newCounts = new Array(newLen).fill(0);
-      const newPrompts = new Array(newLen).fill('');
+
+      // Preserve ALL per-chapter custom prompts from previous outline
+      const newPrompts = [...chapterPrompts.slice(0, newLen)];
+      while (newPrompts.length < newLen) {
+        newPrompts.push('');
+      }
 
       for (let i = 0; i < newLen; i++) {
         newExpanded[i] = expandedChapters[i] || '';
         newCounts[i] = expansionCounts[i] || 0;
-        newPrompts[i] = chapterPrompts[i] || '';
       }
 
       setChapters(validatedChapters);
       setExpandedChapters(newExpanded);
       setExpansionCounts(newCounts);
       setChapterPrompts(newPrompts);
-      setCurrentStep(3);
-      setCurrentChapterIndex(0);
-      setStatus('Outline regenerated — ready to expand chapters.');
+      setStatus('Outline regenerated with per-chapter customizations — ready to expand chapters.');
       saveProgress();
-
-      // Re-apply any per-chapter custom prompts after global outline regeneration.
-      // This ensures chapter-level prompts are not ignored by a global custom prompt.
-      for (let idx = 0; idx < newPrompts.length; idx++) {
-        const p = newPrompts[idx];
-        if (p && p.trim()) {
-          try {
-            // force the per-chapter regeneration even though loading is active
-            await regenerateFromChapterPrompt(idx, { force: true });
-          } catch (err: any) {
-            console.warn(`[Frontend] reapply chapter prompt ${idx} failed`, err);
-          }
-        }
-      }
     } catch (err: any) {
       setError(`Outline regeneration failed: ${err.message || 'Unknown error'}`);
       setRawError(err.rawResponse || '');
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleRegenerateExpandedFromChapter = async (fromChapterIndex: number) => {
+    if (chapterLoading !== null) return;
+
+    const confirmed = window.confirm(
+      `Regenerate expanded chapters starting from Chapter ${fromChapterIndex + 1} ("${chapters[fromChapterIndex]?.title}")?\n\nChapters 1-${fromChapterIndex} will be preserved.\nChapters ${fromChapterIndex + 1}-${chapters.length} will be regenerated.`
+    );
+
+    if (!confirmed) return;
+
+    // Clear expansion data for chapters being regenerated, but PRESERVE chapter custom prompts
+    const newExpanded = [...expandedChapters];
+    const newCounts = [...expansionCounts];
+    for (let i = fromChapterIndex; i < chapters.length; i++) {
+      newExpanded[i] = '';
+      newCounts[i] = 0;
+      // NOTE: NOT clearing chapterPrompts[i] - they are preserved for re-expansion
+    }
+
+    setExpandedChapters(newExpanded);
+    setExpansionCounts(newCounts);
+    // NOTE: chapterPrompts are preserved (not cleared)
+    setError('');
+    setRawError('');
+    setStatus(`Regenerating expanded chapters from Chapter ${fromChapterIndex + 1}...`);
+    setCurrentChapterIndex(fromChapterIndex);
+    setCurrentStep(3);
+    saveProgress();
   };
 
   useEffect(() => {
@@ -1169,6 +1200,16 @@ All four fields must be coherent and internally consistent.`;
                       >
                         {chapterLoading === idx ? 'Regenerating...' : 'Regenerate'}
                       </button>
+                      {idx < chapters.length - 1 && (
+                        <button
+                          onClick={() => handleRegenerateExpandedFromChapter(idx + 1)}
+                          disabled={chapterLoading !== null}
+                          className="px-4 py-1 bg-orange-600 text-white rounded-md hover:bg-orange-700 disabled:opacity-50 ml-2"
+                          title="Regenerate expanded chapters from this chapter onwards"
+                        >
+                          Regen From
+                        </button>
+                      )}
                     </div>
                   </div>
                   {editingChapterPrompt === idx ? (
