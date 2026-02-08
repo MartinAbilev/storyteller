@@ -263,8 +263,8 @@ const StoryExpander: React.FC = () => {
   };
 
   // Regenerate outline from a given chapter index onward when a chapter-level prompt changes
-  const regenerateFromChapterPrompt = async (chapterIndex: number) => {
-    if (isLoading) return;
+  const regenerateFromChapterPrompt = async (chapterIndex: number, options?: { force?: boolean }) => {
+    if (isLoading && !options?.force) return;
     if (!condensedDraft) {
       setError('Cannot regenerate outline: condensed draft is empty.');
       return;
@@ -298,14 +298,70 @@ const StoryExpander: React.FC = () => {
         return parts.join('\n');
       }).join('\n\n') : '';
 
-      const instruction = `Preserve the first ${chapterIndex} chapters exactly as provided in the existing outline. Apply the custom prompt for chapter ${chapterIndex + 1}: "${chapterPrompt}". Then REWRITE chapters ${chapterIndex + 1} through the end so they flow logically from the updated chapter ${chapterIndex + 1} — change titles, summaries, key events, character focus, and timelines as needed to maintain coherent arcs. Do NOT preserve the old content of chapters ${chapterIndex + 1}..end; regenerate them fully (they may be substantially different). Keep the total number of chapters the same, and ensure chapter ordering and timeline progression remain clear. Use the previous chapters' summaries and expanded content (provided) as continuing context when creating later chapters. Output strictly JSON: an array of chapter objects with fields { "title", "summary", "keyEvents", "characterTraits", "timeline" } and no Markdown or code fences. Provide varied, non-repetitive openings and ensure each chapter advances the plot.`;
+      const instruction = `Preserve the first ${chapterIndex} chapters exactly as provided in the existing outline. Apply the custom prompt for chapter ${chapterIndex + 1}: "${chapterPrompt}". Then REWRITE chapters ${chapterIndex + 1} through the end so they flow logically from the updated chapter ${chapterIndex + 1} — change titles, summaries, key events, character focus, and timelines as needed to maintain coherent arcs. Do NOT preserve the old content of chapters ${chapterIndex + 1}..end; regenerate them fully (they may be substantially different). Keep the total number of chapters the same, and ensure chapter ordering and timeline progression remain clear.
+
+CRITICAL - Narrative Continuity: Use the previous chapters' summaries and expanded content (provided) as continuing context when creating later chapters. Most importantly:
+- Any major plot elements, antagonists, characters, conflicts, or story developments introduced in previous chapters (especially those with custom prompts) MUST be acknowledged and continued in subsequent chapters
+- Chapters following a chapter with a custom prompt MUST show how that narrative change affects the broader story arc
+- Do NOT introduce new plot elements and then abandon them in the next chapter — ensure introduced elements either drive multiple chapters forward or have explicit narrative resolution
+- Each chapter should reference or address the consequences of earlier narrative decisions
+
+Output strictly JSON: an array of chapter objects with fields { "title", "summary", "keyEvents", "characterTraits", "timeline" } and no Markdown or code fences. Provide varied, non-repetitive openings and ensure each chapter advances the plot.`;
 
       const customPrompt = `${instruction}\n\nPrevious Chapters Context (titles, summaries, custom prompts, and truncated expanded text):\n${previousContext}\n\nExisting outline: ${JSON.stringify(existingOutline)}\nAdditional outline instructions (if any): ${outlinePrompt || summaryPrompt || ''}`;
 
+      // First, call the extract-key-elements endpoint to augment keyElements with
+      // any major new elements introduced in previousContext or the chapter prompt
+      // (e.g., Orks introduced via a custom prompt that must persist).
+      let augmentedKeyElements = keyElements;
+      try {
+        const extractPrompt = `Please update and augment the story's key elements based on the following previous chapter context and any custom prompts.\n\nContext:\n${previousContext}\n\nExisting key elements (base): ${JSON.stringify(keyElements)}\n\nAdditional instructions: If the context introduces new characters, factions, recurring antagonists, or major plot threads (for example 'Orks' arriving), include them as persistent key elements so they continue to appear across later chapters. Output a JSON object { characters: [...], keyEvents: [...], timeline: [...], uniqueDetails: [...], mainStoryLines: [...] } with no Markdown or extra text.`;
+        const extractResp = await fetch('/api/extract-key-elements', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ condensedDraft, model, customPrompt: extractPrompt }),
+        });
+        if (extractResp.ok) {
+          const extractData = await extractResp.json();
+          const newKE = extractData.keyElements;
+          if (newKE) {
+            // merge characters by name, keyEvents/timeline/uniqueDetails/mainStoryLines by uniqueness
+            const mergeUnique = (a: any[] = [], b: any[] = []) => {
+              const set = new Set(a.map(x => JSON.stringify(x)));
+              b.forEach(x => set.add(JSON.stringify(x)));
+              return Array.from(set).map(s => JSON.parse(s));
+            };
+            const mergedCharacters = (() => {
+              const map = new Map<string, any>();
+              (keyElements.characters || []).forEach((c: any) => map.set((c.name || c).toString(), c));
+              (newKE.characters || []).forEach((c: any) => {
+                const name = (c.name || c).toString();
+                if (!map.has(name)) map.set(name, c);
+              });
+              return Array.from(map.values());
+            })();
+
+            augmentedKeyElements = {
+              characters: mergedCharacters,
+              keyEvents: mergeUnique(keyElements.keyEvents || [], newKE.keyEvents || []),
+              timeline: mergeUnique(keyElements.timeline || [], newKE.timeline || []),
+              uniqueDetails: mergeUnique(keyElements.uniqueDetails || [], newKE.uniqueDetails || []),
+              mainStoryLines: mergeUnique(keyElements.mainStoryLines || [], newKE.mainStoryLines || []),
+            };
+          }
+        } else {
+          console.warn('[Frontend] augment keyElements: extract endpoint returned non-OK');
+        }
+      } catch (e) {
+        console.warn('[Frontend] augment keyElements failed', e);
+      }
+
+      // Now call generate-outline using the augmented key elements so introduced
+      // entities (like Orks) are preserved and considered when regenerating later chapters.
       const response = await fetch('/api/generate-outline', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ condensedDraft, model, customPrompt, keyElements }),
+        body: JSON.stringify({ condensedDraft, model, customPrompt, keyElements: augmentedKeyElements }),
       });
       if (!response.ok) {
         const errData = await response.json();
@@ -398,10 +454,21 @@ const StoryExpander: React.FC = () => {
         saveProgress();
       } else if (currentStep === 2) {
         setStatus('Step 3: Generating chapter outline...');
+        // Ensure all chapter metadata fields are regenerated holistically with custom prompt
+        const enhancedSummaryPrompt = summaryPrompt ? `${summaryPrompt}
+
+CRITICAL: When applying the above instructions, you MUST regenerate ALL chapter metadata fields:
+- Update summaries to reflect the custom prompt modifications
+- Regenerate keyEvents to align with and support the updated summaries
+- Regenerate characterTraits to match the character roles and developments in the updated summaries
+- Update timeline if the custom prompt affects temporal pacing
+
+All four fields must be coherent and internally consistent.` : '';
+
         const response = await fetch('/api/generate-outline', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ condensedDraft, model, customPrompt: summaryPrompt, keyElements }),
+          body: JSON.stringify({ condensedDraft, model, customPrompt: enhancedSummaryPrompt, keyElements }),
         });
         if (!response.ok) {
           const errData = await response.json();
@@ -648,10 +715,21 @@ const StoryExpander: React.FC = () => {
     setRawError('');
     setStatus('Regenerating chapter outline with custom prompt...');
     try {
+      // Ensure all chapter metadata fields (summary, key events, character traits, timeline) are regenerated holistically
+      const enhancedCustomPrompt = `${outlinePrompt || summaryPrompt}
+
+CRITICAL: When applying the above instructions, you MUST regenerate ALL chapter metadata fields:
+- Update summaries to reflect the custom prompt modifications
+- Regenerate keyEvents to align with and support the updated summaries
+- Regenerate characterTraits to match the character roles and developments in the updated summaries
+- Update timeline if the custom prompt affects temporal pacing
+
+All four fields must be coherent and internally consistent.`;
+
       const response = await fetch('/api/generate-outline', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ condensedDraft, model, customPrompt: outlinePrompt || summaryPrompt, keyElements }),
+        body: JSON.stringify({ condensedDraft, model, customPrompt: enhancedCustomPrompt, keyElements }),
       });
       if (!response.ok) {
         const errData = await response.json();
@@ -665,14 +743,41 @@ const StoryExpander: React.FC = () => {
         characterTraits: Array.isArray(ch.characterTraits) ? ch.characterTraits : [],
         timeline: ch.timeline || 'Unknown timeline',
       }));
+
+      // Preserve existing chapter prompts, expanded chapters, and expansion counts
+      const newLen = validatedChapters.length;
+      const newExpanded = new Array(newLen).fill('');
+      const newCounts = new Array(newLen).fill(0);
+      const newPrompts = new Array(newLen).fill('');
+
+      for (let i = 0; i < newLen; i++) {
+        newExpanded[i] = expandedChapters[i] || '';
+        newCounts[i] = expansionCounts[i] || 0;
+        newPrompts[i] = chapterPrompts[i] || '';
+      }
+
       setChapters(validatedChapters);
-      setExpandedChapters(new Array(validatedChapters.length).fill(''));
-      setExpansionCounts(new Array(validatedChapters.length).fill(0));
-      setChapterPrompts(new Array(validatedChapters.length).fill(''));
+      setExpandedChapters(newExpanded);
+      setExpansionCounts(newCounts);
+      setChapterPrompts(newPrompts);
       setCurrentStep(3);
       setCurrentChapterIndex(0);
       setStatus('Outline regenerated — ready to expand chapters.');
       saveProgress();
+
+      // Re-apply any per-chapter custom prompts after global outline regeneration.
+      // This ensures chapter-level prompts are not ignored by a global custom prompt.
+      for (let idx = 0; idx < newPrompts.length; idx++) {
+        const p = newPrompts[idx];
+        if (p && p.trim()) {
+          try {
+            // force the per-chapter regeneration even though loading is active
+            await regenerateFromChapterPrompt(idx, { force: true });
+          } catch (err: any) {
+            console.warn(`[Frontend] reapply chapter prompt ${idx} failed`, err);
+          }
+        }
+      }
     } catch (err: any) {
       setError(`Outline regeneration failed: ${err.message || 'Unknown error'}`);
       setRawError(err.rawResponse || '');
