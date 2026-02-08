@@ -36,6 +36,9 @@ const StoryExpander: React.FC = () => {
   const [status, setStatus] = useState<string>('');
   const [error, setError] = useState<string>('');
   const [rawError, setRawError] = useState<string>('');
+  const [saveStatus, setSaveStatus] = useState<string | null>(null);
+  const [saveStatusType, setSaveStatusType] = useState<'success' | 'error' | null>(null);
+  const [saveStatusTimer, setSaveStatusTimer] = useState<number | null>(null);
   const [condensedDraft, setCondensedDraft] = useState<string>('');
   const [keyElements, setKeyElements] = useState<KeyElements | null>(null);
   const [summaryPrompt, setSummaryPrompt] = useState<string>('');
@@ -202,6 +205,41 @@ const StoryExpander: React.FC = () => {
       model,
     };
     localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(progress));
+    // Also attempt to persist to the backend as story.json (best-effort, non-blocking)
+    (async () => {
+      try {
+        const resp = await fetch('/api/save-state', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(progress),
+        });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}));
+          console.warn('[Frontend] saveProgress: server save failed', err);
+          setSaveStatus('Save failed to server');
+          setSaveStatusType('error');
+        } else {
+          console.log('[Frontend] saveProgress: state saved to server');
+          setSaveStatus('Saved to server');
+          setSaveStatusType('success');
+        }
+      } catch (e: any) {
+        console.warn('[Frontend] saveProgress: network error', e);
+        setSaveStatus('Network error while saving');
+        setSaveStatusType('error');
+      } finally {
+        // clear any existing timer
+        if (saveStatusTimer) {
+          window.clearTimeout(saveStatusTimer);
+        }
+        const t = window.setTimeout(() => {
+          setSaveStatus(null);
+          setSaveStatusType(null);
+          setSaveStatusTimer(null);
+        }, 4000);
+        setSaveStatusTimer(t as unknown as number);
+      }
+    })();
   };
 
   const clearProgress = () => {
@@ -865,6 +903,11 @@ All four fields must be coherent and internally consistent.`;
               <pre className="text-xs bg-gray-100 p-2 rounded mt-1">{rawError}</pre>
             </details>
           )}
+        </div>
+      )}
+      {saveStatus && (
+        <div className={`px-4 py-2 rounded ${saveStatusType === 'success' ? 'bg-green-100 border border-green-400 text-green-700' : 'bg-yellow-100 border border-yellow-400 text-yellow-700'}`}>
+          {saveStatus}
         </div>
       )}
 

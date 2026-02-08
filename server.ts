@@ -2,6 +2,8 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import OpenAI from 'openai';
+import fs from 'fs/promises';
+import path from 'path';
 
 dotenv.config();
 
@@ -374,6 +376,35 @@ app.post('/api/expand-chapter', async (req, res) => {
   } catch (error: any) {
     console.error(`[Backend] Expansion error: ${error.message || error}`);
     res.status(500).json({ error: `Chapter expansion failed: ${error.message || 'Unknown error'}` });
+  }
+});
+
+
+// Save full story state to story.json (frontend should POST the entire progress/state)
+app.post('/api/save-state', async (req, res) => {
+  try {
+    const state = req.body;
+    if (!state) return res.status(400).json({ error: 'State JSON required in request body' });
+    const filePath = path.join(process.cwd(), 'story.json');
+    await fs.writeFile(filePath, JSON.stringify(state, null, 2), 'utf8');
+    console.log(`[Backend] Saved state to ${filePath}`);
+    res.json({ ok: true, path: filePath });
+  } catch (error: any) {
+    console.error('[Backend] save-state error:', error.message || error);
+    res.status(500).json({ error: `Failed to save state: ${error.message || 'Unknown error'}` });
+  }
+});
+
+// Load saved story state from story.json
+app.get('/api/load-state', async (_req, res) => {
+  try {
+    const filePath = path.join(process.cwd(), 'story.json');
+    const data = await fs.readFile(filePath, 'utf8');
+    const parsed = JSON.parse(data || '{}');
+    res.json({ ok: true, state: parsed });
+  } catch (error: any) {
+    console.error('[Backend] load-state error:', error.message || error);
+    res.status(500).json({ error: `Failed to load state: ${error.message || 'Unknown error'}` });
   }
 });
 
