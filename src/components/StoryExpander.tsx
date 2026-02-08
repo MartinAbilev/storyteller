@@ -141,17 +141,16 @@ const StoryExpander: React.FC = () => {
         console.warn('[Frontend] loadProgress: failed to load prompts', err);
       }
 
-      if (!draft) {
-        console.log('[Frontend] loadProgress: Skipping draft-based progress, draft is empty');
-        setStatus('Enter a draft to start or paste one to continue.');
-        return;
-      }
-
       const stored = localStorage.getItem(LOCAL_STORAGE_KEY);
       if (stored) {
-        const progress = JSON.parse(stored);
-        const currentHash = await hashDraft(draft);
-        if (progress.draftHash === currentHash) {
+        try {
+          const progress = JSON.parse(stored);
+          // restore draft (so textarea is populated) — this avoids requiring the user to paste draft again
+          if (progress.draft) setDraft(progress.draft);
+
+          const draftToHash = progress.draft || progress.condensedDraft || '';
+          const currentHash = progress.draftHash || (draftToHash ? await hashDraft(draftToHash) : '');
+
           setCondensedDraft(progress.condensedDraft || '');
           setKeyElements(progress.keyElements || null);
           setSummaryPrompt(progress.summaryPrompt || (summaryPrompt || ''));
@@ -164,16 +163,17 @@ const StoryExpander: React.FC = () => {
           setCurrentChapterIndex(progress.currentChapterIndex || 0);
           setDraftHash(currentHash);
           setModel(progress.model || model || 'gpt-5-mini');
-          setStatus('Loaded saved progress—click Continue or inspect results.');
-        } else {
-          setStatus('Draft changed—clear progress or start fresh.');
+          setStatus('Loaded saved progress—draft and prompts restored.');
+        } catch (err) {
+          console.warn('[Frontend] loadProgress: failed to parse stored progress', err);
+          setStatus('Saved progress corrupted—start fresh.');
         }
       } else {
         setStatus('No saved progress found—start fresh with your draft.');
       }
     };
     loadProgress();
-  }, [draft]);
+  }, []);
 
   // Persist summary/outline prompts (and model) separately so prompts survive Vite refreshes
   useEffect(() => {
@@ -187,6 +187,7 @@ const StoryExpander: React.FC = () => {
 
   const saveProgress = () => {
     const progress = {
+      draft,
       draftHash,
       condensedDraft,
       keyElements,
@@ -255,6 +256,82 @@ const StoryExpander: React.FC = () => {
       saveProgress();
     } catch (err: any) {
       setError(`Regeneration failed: ${err.message || 'Unknown error'}. Try again.`);
+      setRawError(err.rawResponse || '');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Regenerate outline from a given chapter index onward when a chapter-level prompt changes
+  const regenerateFromChapterPrompt = async (chapterIndex: number) => {
+    if (isLoading) return;
+    if (!condensedDraft) {
+      setError('Cannot regenerate outline: condensed draft is empty.');
+      return;
+    }
+    if (!keyElements) {
+      setError('Cannot regenerate outline: key elements missing. Run Step 2 first.');
+      return;
+    }
+
+    setIsLoading(true);
+    setError('');
+    setRawError('');
+    setStatus(`Regenerating outline from chapter ${chapterIndex + 1} onward...`);
+
+    try {
+      const existingOutline = chapters.map((ch) => ({ title: ch.title, summary: ch.summary, keyEvents: ch.keyEvents || [], characterTraits: ch.characterTraits || [], timeline: ch.timeline || '' }));
+      const chapterPrompt = chapterPrompts[chapterIndex] || '';
+
+      const instruction = `Preserve the first ${chapterIndex} chapters exactly as provided in the existing outline. Apply the custom prompt for chapter ${chapterIndex + 1}: "${chapterPrompt}". Then REWRITE chapters ${chapterIndex + 1} through the end so they flow logically from the updated chapter ${chapterIndex + 1} — change titles, summaries, key events, character focus, and timelines as needed to maintain coherent arcs. Do NOT preserve the old content of chapters ${chapterIndex + 1}..end; regenerate them fully (they may be substantially different). Keep the total number of chapters the same, and ensure chapter ordering and timeline progression remain clear. Output strictly JSON: an array of chapter objects with fields { "title", "summary", "keyEvents", "characterTraits", "timeline" } and no Markdown or code fences. Provide varied, non-repetitive openings and ensure each chapter advances the plot.`;
+
+      const customPrompt = `${instruction}\nExisting outline: ${JSON.stringify(existingOutline)}\nAdditional outline instructions (if any): ${outlinePrompt || summaryPrompt || ''}`;
+
+      const response = await fetch('/api/generate-outline', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ condensedDraft, model, customPrompt, keyElements }),
+      });
+      if (!response.ok) {
+        const errData = await response.json();
+        throw Object.assign(new Error(errData.error || 'Outline regeneration failed'), { rawResponse: errData.rawResponse || '' });
+      }
+      const data = await response.json();
+      const validatedChapters = data.chapters.map((ch: Chapter) => ({
+        title: ch.title || 'Untitled Chapter',
+        summary: ch.summary || 'No summary available.',
+        keyEvents: Array.isArray(ch.keyEvents) ? ch.keyEvents : [],
+        characterTraits: Array.isArray(ch.characterTraits) ? ch.characterTraits : [],
+        timeline: ch.timeline || 'Unknown timeline',
+      }));
+
+      const newLen = validatedChapters.length;
+      const newExpanded = new Array(newLen).fill('');
+      const newCounts = new Array(newLen).fill(0);
+      const newPrompts = new Array(newLen).fill('');
+
+      for (let i = 0; i < newLen; i++) {
+        if (i < chapterIndex) {
+          newExpanded[i] = expandedChapters[i] || '';
+          newCounts[i] = expansionCounts[i] || 0;
+          newPrompts[i] = chapterPrompts[i] || '';
+        } else if (i === chapterIndex) {
+          newPrompts[i] = chapterPrompts[i] || '';
+        } else {
+          newPrompts[i] = chapterPrompts[i] || '';
+        }
+      }
+
+      setChapters(validatedChapters);
+      setExpandedChapters(newExpanded);
+      setExpansionCounts(newCounts);
+      setChapterPrompts(newPrompts);
+      setCurrentStep(3);
+      setCurrentChapterIndex((idx) => Math.min(idx, validatedChapters.length));
+      setStatus('Outline regenerated from the edited chapter onward.');
+      saveProgress();
+    } catch (err: any) {
+      setError(`Outline regeneration failed: ${err.message || 'Unknown error'}`);
       setRawError(err.rawResponse || '');
     } finally {
       setIsLoading(false);
@@ -519,6 +596,14 @@ const StoryExpander: React.FC = () => {
       setStatus(`Prompt for chapter ${index + 1} updated—use "Expand More" to apply.`);
     }
     saveProgress();
+    // Trigger outline regeneration for subsequent chapters to maintain continuity
+    (async () => {
+      try {
+        await regenerateFromChapterPrompt(index);
+      } catch (err: any) {
+        console.warn('[Frontend] regenerateFromChapterPrompt failed', err);
+      }
+    })();
   };
 
   const handleEditOutlinePrompt = () => {
