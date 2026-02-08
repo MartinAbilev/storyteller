@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { API_KEYS_STORAGE_KEY, type ApiKeys } from './SettingsModal';
 
 interface Character {
   name: string;
@@ -54,6 +55,20 @@ const StoryExpander: React.FC = () => {
   const [currentChapterIndex, setCurrentChapterIndex] = useState<number>(0);
   const [draftHash, setDraftHash] = useState<string>('');
   const [chapterLoading, setChapterLoading] = useState<number | null>(null);
+
+  // Helper function to get stored API key
+  const getStoredApiKey = (): string => {
+    try {
+      const stored = localStorage.getItem(API_KEYS_STORAGE_KEY);
+      if (stored) {
+        const keys = JSON.parse(stored) as ApiKeys;
+        return keys.openai || '';
+      }
+    } catch (e) {
+      console.error('Failed to get stored API key:', e);
+    }
+    return '';
+  };
 
   const modelOptions = [
     { value: 'gpt-4o-mini', label: 'GPT-4o-mini (Fast & Cheap)' },
@@ -268,12 +283,13 @@ const StoryExpander: React.FC = () => {
     try {
       const chunks = chunkText(draft);
       let condensedDraft = '';
+      const openaiApiKey = getStoredApiKey();
       for (let i = 0; i < chunks.length; i++) {
         console.log(`[Frontend] Processing chunk ${i + 1}/${chunks.length}`);
         const response = await fetch('/api/summarize-draft', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ draft: chunks[i], model, customPrompt: summaryPrompt, chunkIndex: i, totalChunks: chunks.length }),
+          body: JSON.stringify({ draft: chunks[i], model, customPrompt: summaryPrompt, chunkIndex: i, totalChunks: chunks.length, openaiApiKey }),
         });
         if (!response.ok) {
           const errData = await response.json();
@@ -352,12 +368,13 @@ Output strictly JSON: an array of chapter objects with fields { "title", "summar
       // any major new elements introduced in previousContext or the chapter prompt
       // (e.g., Orks introduced via a custom prompt that must persist).
       let augmentedKeyElements = keyElements;
+      const openaiApiKey = getStoredApiKey();
       try {
         const extractPrompt = `Please update and augment the story's key elements based on the following previous chapter context and any custom prompts.\n\nContext:\n${previousContext}\n\nExisting key elements (base): ${JSON.stringify(keyElements)}\n\nAdditional instructions: If the context introduces new characters, factions, recurring antagonists, or major plot threads (for example 'Orks' arriving), include them as persistent key elements so they continue to appear across later chapters. Output a JSON object { characters: [...], keyEvents: [...], timeline: [...], uniqueDetails: [...], mainStoryLines: [...] } with no Markdown or extra text.`;
         const extractResp = await fetch('/api/extract-key-elements', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ condensedDraft, model, customPrompt: extractPrompt }),
+          body: JSON.stringify({ condensedDraft, model, customPrompt: extractPrompt, openaiApiKey }),
         });
         if (extractResp.ok) {
           const extractData = await extractResp.json();
@@ -399,7 +416,7 @@ Output strictly JSON: an array of chapter objects with fields { "title", "summar
       const response = await fetch('/api/generate-outline', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ condensedDraft, model, customPrompt, keyElements: augmentedKeyElements }),
+        body: JSON.stringify({ condensedDraft, model, customPrompt, keyElements: augmentedKeyElements, openaiApiKey }),
       });
       if (!response.ok) {
         const errData = await response.json();
@@ -456,12 +473,13 @@ Output strictly JSON: an array of chapter objects with fields { "title", "summar
         setStatus('Step 1: Summarizing draft chunks...');
         const chunks = chunkText(draft);
         let condensedDraft = '';
+        const openaiApiKey = getStoredApiKey();
         for (let i = 0; i < chunks.length; i++) {
           console.log(`[Frontend] Processing chunk ${i + 1}/${chunks.length}`);
           const response = await fetch('/api/summarize-draft', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ draft: chunks[i], model, customPrompt: summaryPrompt, chunkIndex: i, totalChunks: chunks.length }),
+            body: JSON.stringify({ draft: chunks[i], model, customPrompt: summaryPrompt, chunkIndex: i, totalChunks: chunks.length, openaiApiKey }),
           });
           if (!response.ok) {
             const errData = await response.json();
@@ -476,10 +494,11 @@ Output strictly JSON: an array of chapter objects with fields { "title", "summar
         saveProgress();
       } else if (currentStep === 1) {
         setStatus('Step 2: Extracting key elements...');
+        const openaiApiKey = getStoredApiKey();
         const response = await fetch('/api/extract-key-elements', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ condensedDraft, model, customPrompt: summaryPrompt }),
+          body: JSON.stringify({ condensedDraft, model, customPrompt: summaryPrompt, openaiApiKey }),
         });
         if (!response.ok) {
           const errData = await response.json();
@@ -503,10 +522,11 @@ CRITICAL: When applying the above instructions, you MUST regenerate ALL chapter 
 
 All four fields must be coherent and internally consistent.` : '';
 
+        const openaiApiKey = getStoredApiKey();
         const response = await fetch('/api/generate-outline', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ condensedDraft, model, customPrompt: enhancedSummaryPrompt, keyElements }),
+          body: JSON.stringify({ condensedDraft, model, customPrompt: enhancedSummaryPrompt, keyElements, openaiApiKey }),
         });
         if (!response.ok) {
           const errData = await response.json();
@@ -531,6 +551,7 @@ All four fields must be coherent and internally consistent.` : '';
       } else if (currentStep === 3 && currentChapterIndex < chapters.length) {
         const chapter = chapters[currentChapterIndex];
         const customPrompt = chapterPrompts[currentChapterIndex] || '';
+        const openaiApiKey = getStoredApiKey();
         setStatus(`Step 4: Expanding chapter ${currentChapterIndex + 1}/${chapters.length} ("${chapter.title}")...`);
         setChapterLoading(currentChapterIndex);
         const response = await fetch('/api/expand-chapter', {
@@ -549,6 +570,7 @@ All four fields must be coherent and internally consistent.` : '';
             previousChapters: chapters.slice(0, currentChapterIndex),
             totalChapters: chapters.length,
             keyElements,
+            openaiApiKey,
           }),
         });
         if (!response.ok) {

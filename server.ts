@@ -16,6 +16,13 @@ app.use(express.json({ limit: '100mb' }));
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+const getOpenAIClient = (apiKey?: string): OpenAI => {
+  if (apiKey) {
+    return new OpenAI({ apiKey });
+  }
+  return openai;
+};
+
 const estimateTokens = (text: string): number => text.split(/\s+/).length * 1.3;
 
 const chunkText = (text: string, maxWords = 5000): string[] => {
@@ -54,13 +61,14 @@ const cleanJsonResponse = (text: string): string => {
     .replace(/,\s*([\]\}])/g, '$1');
 };
 
-const generateWithModel = async (prompt: string, model: string, retries = 3, isFallback = false): Promise<string> => {
+const generateWithModel = async (prompt: string, model: string, openaiClient?: OpenAI, retries = 3, isFallback = false): Promise<string> => {
+  const client = openaiClient || openai;
   console.log(`[Backend] Generating with OpenAI model "${model}" (prompt length: ${prompt.length} chars, retries left: ${retries}, fallback: ${isFallback})`);
 
   const tokenParam = model.startsWith('gpt-5') ? { max_completion_tokens: 4000 } : { max_tokens: 4000 };
 
   try {
-    const completion = await openai.chat.completions.create({
+    const completion = await client.chat.completions.create({
       model,
       messages: [{ role: 'user', content: prompt }],
       ...tokenParam,
@@ -75,11 +83,11 @@ const generateWithModel = async (prompt: string, model: string, retries = 3, isF
     console.error(`[Backend] Generation error: ${error.message || error}`);
     if (retries > 0) {
       console.log(`[Backend] Retrying with same model... (${retries - 1} left)`);
-      return generateWithModel(prompt, model, retries - 1, isFallback);
+      return generateWithModel(prompt, model, openaiClient, retries - 1, isFallback);
     }
     if (!isFallback && model !== 'gpt-4o-mini') {
       console.log(`[Backend] Falling back to gpt-4o-mini...`);
-      return generateWithModel(prompt, 'gpt-4o-mini', 3, true);
+      return generateWithModel(prompt, 'gpt-4o-mini', openaiClient, 3, true);
     }
     throw error;
   }
@@ -87,19 +95,20 @@ const generateWithModel = async (prompt: string, model: string, retries = 3, isF
 
 app.post('/api/summarize-draft', async (req, res) => {
   try {
-    const { draft, model, customPrompt, chunkIndex, totalChunks } = req.body;
+    const { draft, model, customPrompt, chunkIndex, totalChunks, openaiApiKey } = req.body;
     if (!draft) return res.status(400).json({ error: 'Draft required' });
     if (chunkIndex === undefined || totalChunks === undefined) {
       return res.status(400).json({ error: 'chunkIndex and totalChunks required' });
     }
 
+    const openaiClient = getOpenAIClient(openaiApiKey);
     console.log(`[Backend] Summarizing chunk ${chunkIndex + 1}/${totalChunks} (~${estimateTokens(draft)} tokens)`);
     const summarizePrompt = `
       Summarize this story chunk concisely (200-400 words), preserving key plot, characters, tone, and details. Focus on narrative flow.
       ${customPrompt ? `Additional instructions: ${customPrompt}` : ''}
       Chunk ${chunkIndex + 1}/${totalChunks}: ${draft}
     `;
-    const summary = await generateWithModel(summarizePrompt, model);
+    const summary = await generateWithModel(summarizePrompt, model, openaiClient);
     res.json({ condensedChunk: summary, chunkIndex, totalChunks });
   } catch (error: any) {
     console.error(`[Backend] Summarization error: ${error.message || error}`);
@@ -109,9 +118,10 @@ app.post('/api/summarize-draft', async (req, res) => {
 
 app.post('/api/extract-key-elements', async (req, res) => {
   try {
-    const { condensedDraft, model, customPrompt } = req.body;
+    const { condensedDraft, model, customPrompt, openaiApiKey } = req.body;
     if (!condensedDraft) return res.status(400).json({ error: 'Condensed draft required' });
 
+    const openaiClient = getOpenAIClient(openaiApiKey);
     console.log(`[Backend] Extracting key elements (~${estimateTokens(condensedDraft)} tokens)`);
     const extractPrompt = `
       Extract key elements from this condensed novel draft:
@@ -124,7 +134,7 @@ app.post('/api/extract-key-elements', async (req, res) => {
       Output as valid JSON: { "characters": [{...},...], "keyEvents": [...], "timeline": [...], "uniqueDetails": [...], "mainStoryLines": [...] }.
       Condensed Draft: ${condensedDraft.substring(0, 10000)}... (trimmed)
     `;
-    const extractText = await generateWithModel(extractPrompt, model);
+    const extractText = await generateWithModel(extractPrompt, model, openaiClient);
     const cleanedText = cleanJsonResponse(extractText);
     let keyElements;
     try {
@@ -162,7 +172,7 @@ app.post('/api/extract-key-elements', async (req, res) => {
         Output strictly JSON: { "characters": [{...},...], "keyEvents": [...], "timeline": [...], "uniqueDetails": [...], "mainStoryLines": [...] }.
         Draft: ${condensedDraft.substring(0, 10000)}...
       `;
-      const retryText = await generateWithModel(strictPrompt, model);
+      const retryText = await generateWithModel(strictPrompt, model, openaiClient);
       const retryCleaned = cleanJsonResponse(retryText);
       try {
         keyElements = JSON.parse(retryCleaned);
@@ -198,10 +208,11 @@ app.post('/api/extract-key-elements', async (req, res) => {
 
 app.post('/api/generate-outline', async (req, res) => {
   try {
-    const { condensedDraft, model, customPrompt, keyElements } = req.body;
+    const { condensedDraft, model, customPrompt, keyElements, openaiApiKey } = req.body;
     if (!condensedDraft) return res.status(400).json({ error: 'Condensed draft required' });
     if (!keyElements) return res.status(400).json({ error: 'Key elements required' });
 
+    const openaiClient = getOpenAIClient(openaiApiKey);
     console.log(`[Backend] Generating outline (~${estimateTokens(condensedDraft)} tokens)`);
     const outlinePrompt = `
       Analyze this condensed novel draft and extract key elements to create a rich, detailed outline for 6-10 high-level chapters.
@@ -217,7 +228,7 @@ app.post('/api/generate-outline', async (req, res) => {
       Ensure the response is strictly JSON, with no Markdown, code fences, or extra text.
       Condensed Draft: ${condensedDraft.substring(0, 10000)}... (trimmed)
     `;
-    const outlineText = await generateWithModel(outlinePrompt, model);
+    const outlineText = await generateWithModel(outlinePrompt, model, openaiClient);
     const cleanedText = cleanJsonResponse(outlineText);
     let chapters;
     try {
@@ -254,7 +265,7 @@ app.post('/api/generate-outline', async (req, res) => {
         Output strictly JSON: [{ "title": "...", "summary": "...", "keyEvents": ["..."], "characterTraits": ["..."], "timeline": "..." }].
         Draft: ${condensedDraft.substring(0, 10000)}...
       `;
-      const retryText = await generateWithModel(strictPrompt, model);
+      const retryText = await generateWithModel(strictPrompt, model, openaiClient);
       const retryCleaned = cleanJsonResponse(retryText);
       try {
         chapters = JSON.parse(retryCleaned);
@@ -286,9 +297,10 @@ app.post('/api/generate-outline', async (req, res) => {
 
 app.post('/api/expand-chapter', async (req, res) => {
   try {
-    const { condensedDraft, title, summary, model, customPrompt, chapterIndex, previousChapters, totalChapters, keyElements, keyEvents, characterTraits, timeline } = req.body;
+    const { condensedDraft, title, summary, model, customPrompt, chapterIndex, previousChapters, totalChapters, keyElements, keyEvents, characterTraits, timeline, openaiApiKey } = req.body;
     if (!title || !summary) return res.status(400).json({ error: 'Chapter title and summary required' });
 
+    const openaiClient = getOpenAIClient(openaiApiKey);
     console.log(`[Backend] Expanding chapter "${title}" (index: ${chapterIndex}, total: ${totalChapters})`);
     console.log(`[Backend] Request body: ${JSON.stringify(req.body, null, 2).slice(0, 500)}...`);
 
@@ -370,7 +382,7 @@ app.post('/api/expand-chapter', async (req, res) => {
 
 
 
-    const details = await generateWithModel(expandPrompt, model);
+    const details = await generateWithModel(expandPrompt, model, openaiClient);
     console.log(`[Backend] Expanded chapter "${title}": ${details.slice(0, 200)}...`);
     res.json({ details });
   } catch (error: any) {
