@@ -1,0 +1,15 @@
+{
+  "condensedDraft": "This is a test story about a young hero.",
+  "title": "Chapter 1",
+  "summary": "A test chapter about adventure",
+  "model": "gpt-4o-mini",
+  "chapterIndex": 0,
+  "totalChapters": 1,
+  "keyElements": {
+    "characters": [],
+    "keyEvents": [],
+    "timeline": [],
+    "uniqueDetails": [],
+    "mainStoryLines": []
+  }
+}

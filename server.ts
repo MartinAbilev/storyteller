@@ -13,6 +13,15 @@ const PORT = 3001;
 app.use(cors());
 app.use(express.json({ limit: '500mb' }));
 
+// Error handler for JSON parsing issues
+// app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+//   if (err instanceof SyntaxError && 'body' in err) {
+//     console.error('[Backend] JSON parse error in middleware:', err.message);
+//     return res.status(400).json({ error: `Invalid JSON in request body: ${err.message}` });
+//   }
+//   next(err);
+// });
+
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY || 'sk-placeholder' });
 
 const getOpenAIClient = (apiKey?: string): OpenAI => {
@@ -104,6 +113,7 @@ const generateWithModel = async (prompt: string, model: string, openaiClient?: O
 };
 
 app.post('/api/summarize-draft', async (req, res) => {
+  console.log();
   try {
     const { draft, model, customPrompt, chunkIndex, totalChunks, openaiApiKey } = req.body;
     if (!draft) return res.status(400).json({ error: 'Draft required' });
@@ -124,15 +134,22 @@ app.post('/api/summarize-draft', async (req, res) => {
       Chunk ${chunkIndex + 1}/${totalChunks}: ${draft}
     `;
     const summary = await generateWithModel(summarizePrompt, model, openaiClient);
-    res.json({ condensedChunk: summary, chunkIndex, totalChunks });
+    return res.json({ condensedChunk: summary, chunkIndex, totalChunks });
   } catch (error: any) {
     console.error(`[Backend] Summarization error: ${error.message || error}`);
-    res.status(500).json({ error: `Summarization failed: ${error.message || 'Unknown error'}` });
+    try {
+      return res.status(500).json({ error: `Summarization failed: ${error.message || 'Unknown error'}` });
+    } catch (sendError) {
+      console.error(`[Backend] Failed to send error response: ${sendError}`);
+      if (!res.headersSent) {
+        return res.status(500).json({ error: 'Internal server error' });
+      }
+    }
   }
 });
 
 app.post('/api/extract-key-elements', async (req, res) => {
-  try {
+  console.log('extract keys elem');
     const { condensedDraft, model, customPrompt, openaiApiKey } = req.body;
     if (!condensedDraft) return res.status(400).json({ error: 'Condensed draft required' });
 
@@ -193,6 +210,7 @@ app.post('/api/extract-key-elements', async (req, res) => {
         Draft: ${condensedDraft.substring(0, 10000)}...
       `;
       const retryText = await generateWithModel(strictPrompt, model, openaiClient);
+      console.log('KEYELEMENTS', retryText)
       const retryCleaned = cleanJsonResponse(retryText);
       try {
         keyElements = JSON.parse(retryCleaned);
@@ -219,11 +237,8 @@ app.post('/api/extract-key-elements', async (req, res) => {
       }
     }
     console.log(`[Backend] Extracted key elements: ${JSON.stringify(keyElements, null, 2).slice(0, 200)}...`);
-    res.json({ keyElements });
-  } catch (error: any) {
-    console.error(`[Backend] Key elements extraction error: ${error.message || error}, raw response: ${error.rawResponse || 'N/A'}`);
-    res.status(500).json({ error: `Key elements extraction failed: ${error.message || 'Unknown error'}`, rawResponse: error.rawResponse || '' });
-  }
+    return res.json({ keyElements });
+
 });
 
 app.post('/api/generate-outline', async (req, res) => {
@@ -313,10 +328,17 @@ app.post('/api/generate-outline', async (req, res) => {
       }
     }
     console.log(`[Backend] Generated ${chapters.length} chapters: ${JSON.stringify(chapters[0], null, 2).slice(0, 200)}...`);
-    res.json({ chapters });
+    return res.json({ chapters });
   } catch (error: any) {
     console.error(`[Backend] Outline error: ${error.message || error}, raw response: ${error.rawResponse || 'N/A'}`);
-    res.status(500).json({ error: `Outline generation failed: ${error.message || 'Unknown error'}`, rawResponse: error.rawResponse || '' });
+    try {
+      return res.status(500).json({ error: `Outline generation failed: ${error.message || 'Unknown error'}`, rawResponse: error.rawResponse || '' });
+    } catch (sendError) {
+      console.error(`[Backend] Failed to send error response: ${sendError}`);
+      if (!res.headersSent) {
+        return res.status(500).json({ error: 'Internal server error' });
+      }
+    }
   }
 });
 
@@ -419,16 +441,25 @@ app.post('/api/expand-chapter', async (req, res) => {
 
 
     const details = await generateWithModel(expandPrompt, model, openaiClient);
+    console.log(`[Backend] Got details from OpenAI: ${details.length} chars`);
     if (!details || details.trim() === '') {
+      console.log(`[Backend] Details are empty, returning 500`);
       return res.status(500).json({ error: 'Empty response from OpenAI API. Try again or use a different model.' });
     }
-    console.log(`[Backend] Expanded chapter "${title}": ${details.slice(0, 200)}...`);
-    res.json({ details });
+    console.log(`[Backend] Expanded chapter "${title}": ${details.slice(0, 100)}...`);
+    console.log(`[Backend] Sending response`);
+    return res.json({ details });
   } catch (error: any) {
     console.error(`[Backend] Expansion error: ${error.message || error}`);
     const errorMsg = error.message || 'Unknown error';
-    console.error(`[Backend] Full error: ${JSON.stringify(error)}`);
-    return res.status(500).json({ error: `Chapter expansion failed: ${errorMsg}` });
+    try {
+      return res.status(500).json({ error: `Chapter expansion failed: ${errorMsg}` });
+    } catch (sendError) {
+      console.error(`[Backend] Failed to send error response: ${sendError}`);
+      if (!res.headersSent) {
+        return res.status(500).json({ error: 'Internal server error' });
+      }
+    }
   }
 });
 
@@ -441,10 +472,17 @@ app.post('/api/save-state', async (req, res) => {
     const filePath = path.join(process.cwd(), 'story.json');
     await fs.writeFile(filePath, JSON.stringify(state, null, 2), 'utf8');
     console.log(`[Backend] Saved state to ${filePath}`);
-    res.json({ ok: true, path: filePath });
+    return res.json({ ok: true, path: filePath });
   } catch (error: any) {
     console.error('[Backend] save-state error:', error.message || error);
-    res.status(500).json({ error: `Failed to save state: ${error.message || 'Unknown error'}` });
+    try {
+      return res.status(500).json({ error: `Failed to save state: ${error.message || 'Unknown error'}` });
+    } catch (sendError) {
+      console.error(`[Backend] Failed to send error response: ${sendError}`);
+      if (!res.headersSent) {
+        return res.status(500).json({ error: 'Internal server error' });
+      }
+    }
   }
 });
 
@@ -454,13 +492,27 @@ app.get('/api/load-state', async (_req, res) => {
     const filePath = path.join(process.cwd(), 'story.json');
     const data = await fs.readFile(filePath, 'utf8');
     const parsed = JSON.parse(data || '{}');
-    res.json({ ok: true, state: parsed });
+    return res.json({ ok: true, state: parsed });
   } catch (error: any) {
     console.error('[Backend] load-state error:', error.message || error);
-    res.status(500).json({ error: `Failed to load state: ${error.message || 'Unknown error'}` });
+    try {
+      return res.status(500).json({ error: `Failed to load state: ${error.message || 'Unknown error'}` });
+    } catch (sendError) {
+      console.error(`[Backend] Failed to send error response: ${sendError}`);
+      if (!res.headersSent) {
+        return res.status(500).json({ error: 'Internal server error' });
+      }
+    }
   }
 });
 
+// Global error handler - must be last
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  console.error('[Backend] Unhandled error:', err.message || err);
+  if (!res.headersSent) {
+    return res.status(500).json({ error: `Server error: ${err.message || 'Unknown error'}` });
+  }
+});
 
 app.listen(PORT, () => {
   console.log(`[Backend] Running on http://localhost:${PORT} (OpenAI-only with finale instruction)`);

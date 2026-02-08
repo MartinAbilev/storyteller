@@ -84,10 +84,15 @@ const StoryExpander: React.FC = () => {
   // Helper function to safely parse JSON responses
   const parseJsonResponse = async (response: Response, context: string): Promise<any> => {
     try {
-      return await response.json();
+      const text = await response.text();
+      if (!text) {
+        throw new Error('Empty response body');
+      }
+      return JSON.parse(text);
     } catch (jsonError: any) {
       console.error(`[Frontend] Failed to parse JSON in ${context}:`, jsonError);
-      throw new Error(`Server returned invalid response in ${context}. Try again or try a simpler model.`);
+      console.error(`[Frontend] Response status: ${response.status}`);
+      throw new Error(`Server error in ${context}: ${jsonError.message || 'Invalid response format'}`);
     }
   };
 
@@ -398,7 +403,7 @@ Output strictly JSON: an array of chapter objects with fields { "title", "summar
           body: JSON.stringify({ condensedDraft, model, customPrompt: extractPrompt, openaiApiKey }),
         });
         if (extractResp.ok) {
-          const extractData = await extractResp.json();
+          const extractData = await parseJsonResponse(extractResp, 'augment-key-elements');
           const newKE = extractData.keyElements;
           if (newKE) {
             // merge characters by name, keyEvents/timeline/uniqueDetails/mainStoryLines by uniqueness
@@ -426,7 +431,8 @@ Output strictly JSON: an array of chapter objects with fields { "title", "summar
             };
           }
         } else {
-          console.warn('[Frontend] augment keyElements: extract endpoint returned non-OK');
+          const errData = await parseJsonResponse(extractResp, 'augment-key-elements error');
+          console.warn('[Frontend] augment keyElements: extract endpoint failed:', errData.error || 'Unknown error');
         }
       } catch (e) {
         console.warn('[Frontend] augment keyElements failed', e);
