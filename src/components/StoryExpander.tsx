@@ -283,9 +283,24 @@ const StoryExpander: React.FC = () => {
       const existingOutline = chapters.map((ch) => ({ title: ch.title, summary: ch.summary, keyEvents: ch.keyEvents || [], characterTraits: ch.characterTraits || [], timeline: ch.timeline || '' }));
       const chapterPrompt = chapterPrompts[chapterIndex] || '';
 
-      const instruction = `Preserve the first ${chapterIndex} chapters exactly as provided in the existing outline. Apply the custom prompt for chapter ${chapterIndex + 1}: "${chapterPrompt}". Then REWRITE chapters ${chapterIndex + 1} through the end so they flow logically from the updated chapter ${chapterIndex + 1} — change titles, summaries, key events, character focus, and timelines as needed to maintain coherent arcs. Do NOT preserve the old content of chapters ${chapterIndex + 1}..end; regenerate them fully (they may be substantially different). Keep the total number of chapters the same, and ensure chapter ordering and timeline progression remain clear. Output strictly JSON: an array of chapter objects with fields { "title", "summary", "keyEvents", "characterTraits", "timeline" } and no Markdown or code fences. Provide varied, non-repetitive openings and ensure each chapter advances the plot.`;
+      // Build a previous-chapters context block including summaries and any expanded chapter text
+      const prevChapters = chapters.slice(0, chapterIndex).map((ch, idx) => ({
+        index: idx + 1,
+        title: ch.title,
+        summary: ch.summary,
+        expanded: expandedChapters[idx] || '',
+        customPrompt: chapterPrompts[idx] || ''
+      }));
+      const previousContext = prevChapters.length > 0 ? prevChapters.map(pc => {
+        const parts = [`Chapter ${pc.index}: ${pc.title}`, `Summary: ${pc.summary}`];
+        if (pc.customPrompt) parts.push(`CustomPrompt: ${pc.customPrompt}`);
+        if (pc.expanded) parts.push(`ExpandedText: ${pc.expanded.substring(0, 2000)}`);
+        return parts.join('\n');
+      }).join('\n\n') : '';
 
-      const customPrompt = `${instruction}\nExisting outline: ${JSON.stringify(existingOutline)}\nAdditional outline instructions (if any): ${outlinePrompt || summaryPrompt || ''}`;
+      const instruction = `Preserve the first ${chapterIndex} chapters exactly as provided in the existing outline. Apply the custom prompt for chapter ${chapterIndex + 1}: "${chapterPrompt}". Then REWRITE chapters ${chapterIndex + 1} through the end so they flow logically from the updated chapter ${chapterIndex + 1} — change titles, summaries, key events, character focus, and timelines as needed to maintain coherent arcs. Do NOT preserve the old content of chapters ${chapterIndex + 1}..end; regenerate them fully (they may be substantially different). Keep the total number of chapters the same, and ensure chapter ordering and timeline progression remain clear. Use the previous chapters' summaries and expanded content (provided) as continuing context when creating later chapters. Output strictly JSON: an array of chapter objects with fields { "title", "summary", "keyEvents", "characterTraits", "timeline" } and no Markdown or code fences. Provide varied, non-repetitive openings and ensure each chapter advances the plot.`;
+
+      const customPrompt = `${instruction}\n\nPrevious Chapters Context (titles, summaries, custom prompts, and truncated expanded text):\n${previousContext}\n\nExisting outline: ${JSON.stringify(existingOutline)}\nAdditional outline instructions (if any): ${outlinePrompt || summaryPrompt || ''}`;
 
       const response = await fetch('/api/generate-outline', {
         method: 'POST',
@@ -312,12 +327,12 @@ const StoryExpander: React.FC = () => {
 
       for (let i = 0; i < newLen; i++) {
         if (i < chapterIndex) {
+          // preserve earlier chapters' expansions/counts/prompts
           newExpanded[i] = expandedChapters[i] || '';
           newCounts[i] = expansionCounts[i] || 0;
           newPrompts[i] = chapterPrompts[i] || '';
-        } else if (i === chapterIndex) {
-          newPrompts[i] = chapterPrompts[i] || '';
         } else {
+          // for regenerated and later chapters, try to preserve any existing custom prompt mapping
           newPrompts[i] = chapterPrompts[i] || '';
         }
       }
