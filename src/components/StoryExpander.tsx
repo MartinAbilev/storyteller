@@ -30,7 +30,7 @@ const LOCAL_STORAGE_KEY = 'storyExpanderProgress';
 
 const StoryExpander: React.FC = () => {
   const [draft, setDraft] = useState<string>('');
-  const [model, setModel] = useState<string>('gpt-5');
+  const [model, setModel] = useState<string>('gpt-5-mini');
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [status, setStatus] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -52,8 +52,8 @@ const StoryExpander: React.FC = () => {
   const modelOptions = [
     { value: 'gpt-4o-mini', label: 'GPT-4o-mini (Fast & Cheap)' },
     { value: 'gpt-4o', label: 'GPT-4o (Balanced)' },
-    { value: 'gpt-5', label: 'GPT-5 (PhD-Level, Powerful - Default)' },
-    { value: 'gpt-5-mini', label: 'GPT-5-mini (Efficient)' },
+    { value: 'gpt-5-mini', label: 'GPT-5-mini (Efficient) - Default' },
+    { value: 'gpt-5', label: 'GPT-5 (PhD-Level, Powerful)' },
   ];
 
   const totalSteps = 4 + (chapters.length || 6) + expansionCounts.reduce((sum, count) => sum + count, 0);
@@ -145,7 +145,7 @@ const StoryExpander: React.FC = () => {
           setCurrentStep(progress.currentStep || 0);
           setCurrentChapterIndex(progress.currentChapterIndex || 0);
           setDraftHash(currentHash);
-          setModel(progress.model || 'gpt-5');
+          setModel(progress.model || 'gpt-5-mini');
           setStatus('Loaded saved progress—click Continue or inspect results.');
         } else {
           setStatus('Draft changed—clear progress or start fresh.');
