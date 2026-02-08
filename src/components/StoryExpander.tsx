@@ -70,6 +70,27 @@ const StoryExpander: React.FC = () => {
     return '';
   };
 
+  // Helper function to handle API errors
+  const handleApiError = (error: any, response?: Response): Error => {
+    if (response?.status === 401) {
+      return new Error(
+        error?.error ||
+        'API key not found. Add your key in Settings (⚙️) or use OPENAI_API_KEY in .env. Settings take priority.'
+      );
+    }
+    return error || new Error('Unknown error');
+  };
+
+  // Helper function to safely parse JSON responses
+  const parseJsonResponse = async (response: Response, context: string): Promise<any> => {
+    try {
+      return await response.json();
+    } catch (jsonError: any) {
+      console.error(`[Frontend] Failed to parse JSON in ${context}:`, jsonError);
+      throw new Error(`Server returned invalid response in ${context}. Try again or try a simpler model.`);
+    }
+  };
+
   const modelOptions = [
     { value: 'gpt-4o-mini', label: 'GPT-4o-mini (Fast & Cheap)' },
     { value: 'gpt-4o', label: 'GPT-4o (Balanced)' },
@@ -292,10 +313,10 @@ const StoryExpander: React.FC = () => {
           body: JSON.stringify({ draft: chunks[i], model, customPrompt: summaryPrompt, chunkIndex: i, totalChunks: chunks.length, openaiApiKey }),
         });
         if (!response.ok) {
-          const errData = await response.json();
-          throw new Error(errData.error || `Summarization failed for chunk ${i + 1}`);
+          const errData = await parseJsonResponse(response, 'summarize-draft error');
+          throw handleApiError(errData, response);
         }
-        const data = await response.json();
+        const data = await parseJsonResponse(response, 'summarize-draft');
         condensedDraft += data.condensedChunk + ' ';
       }
       setCondensedDraft(condensedDraft.trim());
@@ -420,7 +441,8 @@ Output strictly JSON: an array of chapter objects with fields { "title", "summar
       });
       if (!response.ok) {
         const errData = await response.json();
-        throw Object.assign(new Error(errData.error || 'Outline regeneration failed'), { rawResponse: errData.rawResponse || '' });
+        const error = handleApiError(errData, response);
+        throw Object.assign(error, { rawResponse: errData.rawResponse || '' });
       }
       const data = await response.json();
       const validatedChapters = data.chapters.map((ch: Chapter) => ({
@@ -502,7 +524,8 @@ Output strictly JSON: an array of chapter objects with fields { "title", "summar
         });
         if (!response.ok) {
           const errData = await response.json();
-          throw Object.assign(new Error(errData.error || 'Key elements extraction failed'), { rawResponse: errData.rawResponse || '' });
+          const error = handleApiError(errData, response);
+          throw Object.assign(error, { rawResponse: errData.rawResponse || '' });
         }
         const data = await response.json();
         setKeyElements(data.keyElements);
@@ -530,7 +553,8 @@ All four fields must be coherent and internally consistent.` : '';
         });
         if (!response.ok) {
           const errData = await response.json();
-          throw Object.assign(new Error(errData.error || 'Outline failed'), { rawResponse: errData.rawResponse || '' });
+          const error = handleApiError(errData, response);
+          throw Object.assign(error, { rawResponse: errData.rawResponse || '' });
         }
         const data = await response.json();
         const validatedChapters = data.chapters.map((ch: Chapter) => ({
@@ -574,10 +598,10 @@ All four fields must be coherent and internally consistent.` : '';
           }),
         });
         if (!response.ok) {
-          const errData = await response.json();
-          throw new Error(errData.error || `Expansion for chapter ${currentChapterIndex + 1} failed`);
+          const errData = await parseJsonResponse(response, 'expand-chapter error');
+          throw handleApiError(errData, response) || new Error(`Expansion for chapter ${currentChapterIndex + 1} failed`);
         }
-        const data = await response.json();
+        const data = await parseJsonResponse(response, 'expand-chapter');
         const newExpanded = [...expandedChapters];
         newExpanded[currentChapterIndex] = data.details;
         setExpandedChapters(newExpanded);
@@ -701,7 +725,7 @@ All four fields must be coherent and internally consistent.` : '';
       });
       if (!response.ok) {
         const errData = await response.json();
-        throw new Error(errData.error || `Regeneration for chapter ${chapterIndex + 1} failed`);
+        throw handleApiError(errData, response) || new Error(`Regeneration for chapter ${chapterIndex + 1} failed`);
       }
       const data = await response.json();
       const newExpanded = [...expandedChapters];
@@ -797,7 +821,8 @@ All four fields must be coherent and internally consistent.`;
       });
       if (!response.ok) {
         const errData = await response.json();
-        throw Object.assign(new Error(errData.error || 'Outline regeneration failed'), { rawResponse: errData.rawResponse || '' });
+        const error = handleApiError(errData, response);
+        throw Object.assign(error, { rawResponse: errData.rawResponse || '' });
       }
       const data = await response.json();
       const validatedChapters = data.chapters.map((ch: Chapter) => ({

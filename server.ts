@@ -11,16 +11,26 @@ const app = express();
 const PORT = 3001;
 
 app.use(cors());
-app.use(express.json({ limit: '100mb' }));
+app.use(express.json({ limit: '500mb' }));
 
-
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY || 'sk-placeholder' });
 
 const getOpenAIClient = (apiKey?: string): OpenAI => {
-  if (apiKey) {
+  if (apiKey && apiKey.trim() !== '' && apiKey !== 'sk-placeholder') {
     return new OpenAI({ apiKey });
   }
   return openai;
+};
+
+const validateApiKey = (apiKey?: string): string | null => {
+  // Priority: Settings > Environment Variable
+  if (!apiKey || apiKey.trim() === '' || apiKey === 'sk-placeholder') {
+    // Settings key not provided, check environment variable
+    if (!process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY === 'sk-placeholder') {
+      return 'No OpenAI API key found. Priority: (1) Settings, (2) .env. Please add your OpenAI API key in Settings (⚙️) or set OPENAI_API_KEY in .env file.';
+    }
+  }
+  return null;
 };
 
 const estimateTokens = (text: string): number => text.split(/\s+/).length * 1.3;
@@ -101,6 +111,11 @@ app.post('/api/summarize-draft', async (req, res) => {
       return res.status(400).json({ error: 'chunkIndex and totalChunks required' });
     }
 
+    const keyError = validateApiKey(openaiApiKey);
+    if (keyError) {
+      return res.status(401).json({ error: keyError });
+    }
+
     const openaiClient = getOpenAIClient(openaiApiKey);
     console.log(`[Backend] Summarizing chunk ${chunkIndex + 1}/${totalChunks} (~${estimateTokens(draft)} tokens)`);
     const summarizePrompt = `
@@ -120,6 +135,11 @@ app.post('/api/extract-key-elements', async (req, res) => {
   try {
     const { condensedDraft, model, customPrompt, openaiApiKey } = req.body;
     if (!condensedDraft) return res.status(400).json({ error: 'Condensed draft required' });
+
+    const keyError = validateApiKey(openaiApiKey);
+    if (keyError) {
+      return res.status(401).json({ error: keyError });
+    }
 
     const openaiClient = getOpenAIClient(openaiApiKey);
     console.log(`[Backend] Extracting key elements (~${estimateTokens(condensedDraft)} tokens)`);
@@ -212,6 +232,11 @@ app.post('/api/generate-outline', async (req, res) => {
     if (!condensedDraft) return res.status(400).json({ error: 'Condensed draft required' });
     if (!keyElements) return res.status(400).json({ error: 'Key elements required' });
 
+    const keyError = validateApiKey(openaiApiKey);
+    if (keyError) {
+      return res.status(401).json({ error: keyError });
+    }
+
     const openaiClient = getOpenAIClient(openaiApiKey);
     console.log(`[Backend] Generating outline (~${estimateTokens(condensedDraft)} tokens)`);
     const outlinePrompt = `
@@ -299,6 +324,12 @@ app.post('/api/expand-chapter', async (req, res) => {
   try {
     const { condensedDraft, title, summary, model, customPrompt, chapterIndex, previousChapters, totalChapters, keyElements, keyEvents, characterTraits, timeline, openaiApiKey } = req.body;
     if (!title || !summary) return res.status(400).json({ error: 'Chapter title and summary required' });
+    if (!keyElements) return res.status(400).json({ error: 'Key elements required' });
+
+    const keyError = validateApiKey(openaiApiKey);
+    if (keyError) {
+      return res.status(401).json({ error: keyError });
+    }
 
     const openaiClient = getOpenAIClient(openaiApiKey);
     console.log(`[Backend] Expanding chapter "${title}" (index: ${chapterIndex}, total: ${totalChapters})`);
@@ -307,18 +338,23 @@ app.post('/api/expand-chapter', async (req, res) => {
     const safeKeyEvents = Array.isArray(keyEvents) ? keyEvents : [];
     const safeCharacterTraits = Array.isArray(characterTraits) ? characterTraits : [];
 
+    // Safely access keyElements properties with fallbacks
+    const safeCharacters = Array.isArray(keyElements.characters) ? keyElements.characters : [];
+    const safeKeyElementsEvents = Array.isArray(keyElements.keyEvents) ? keyElements.keyEvents : [];
+    const safeUniqueDetails = Array.isArray(keyElements.uniqueDetails) ? keyElements.uniqueDetails : [];
+
     const chapterCharacterNames = safeCharacterTraits.map((trait: string) => trait.split(':')[0].trim());
-    const relevantCharacters = keyElements.characters.filter((char: any) =>
+    const relevantCharacters = safeCharacters.filter((char: any) =>
       chapterCharacterNames.includes(char.name)
     );
-    const relevantKeyEvents = keyElements.keyEvents.filter((event: string) =>
+    const relevantKeyEvents = safeKeyElementsEvents.filter((event: string) =>
       safeKeyEvents.some((chapterEvent: string) => event.toLowerCase().includes(chapterEvent.toLowerCase().split(' ')[0])) ||
       summary.toLowerCase().includes(event.toLowerCase().split(' ')[0])
     );
     const relevantKeyElements = {
       characters: relevantCharacters,
       keyEvents: relevantKeyEvents,
-      uniqueDetails: keyElements.uniqueDetails.filter((detail: string) =>
+      uniqueDetails: safeUniqueDetails.filter((detail: string) =>
         summary.toLowerCase().includes(detail.toLowerCase()) ||
         safeKeyEvents.some((event: string) => event.toLowerCase().includes(detail.toLowerCase()))
       ),
@@ -383,11 +419,16 @@ app.post('/api/expand-chapter', async (req, res) => {
 
 
     const details = await generateWithModel(expandPrompt, model, openaiClient);
+    if (!details || details.trim() === '') {
+      return res.status(500).json({ error: 'Empty response from OpenAI API. Try again or use a different model.' });
+    }
     console.log(`[Backend] Expanded chapter "${title}": ${details.slice(0, 200)}...`);
     res.json({ details });
   } catch (error: any) {
     console.error(`[Backend] Expansion error: ${error.message || error}`);
-    res.status(500).json({ error: `Chapter expansion failed: ${error.message || 'Unknown error'}` });
+    const errorMsg = error.message || 'Unknown error';
+    console.error(`[Backend] Full error: ${JSON.stringify(error)}`);
+    return res.status(500).json({ error: `Chapter expansion failed: ${errorMsg}` });
   }
 });
 
