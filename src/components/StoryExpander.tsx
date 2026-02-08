@@ -627,6 +627,7 @@ All four fields must be coherent and internally consistent.` : '';
     try {
       const chapter = chapters[chapterIndex];
       const customPrompt = chapterPrompts[chapterIndex] || '';
+      const openaiApiKey = getStoredApiKey();
       setStatus(`Expanding chapter ${chapterIndex + 1} ("${chapter.title}") further...`);
       const response = await fetch('/api/expand-chapter-more', {
         method: 'POST',
@@ -645,6 +646,7 @@ All four fields must be coherent and internally consistent.` : '';
           previousChapters: chapters.slice(0, chapterIndex),
           totalChapters: chapters.length,
           keyElements,
+          openaiApiKey,
         }),
       });
       if (!response.ok) {
@@ -676,6 +678,7 @@ All four fields must be coherent and internally consistent.` : '';
     try {
       const chapter = chapters[chapterIndex];
       const customPrompt = chapterPrompts[chapterIndex] || '';
+      const openaiApiKey = getStoredApiKey();
       setStatus(`Regenerating chapter ${chapterIndex + 1} ("${chapter.title}") with custom prompt...`);
       const response = await fetch('/api/expand-chapter', {
         method: 'POST',
@@ -693,6 +696,7 @@ All four fields must be coherent and internally consistent.` : '';
           previousChapters: chapters.slice(0, chapterIndex),
           totalChapters: chapters.length,
           keyElements,
+          openaiApiKey,
         }),
       });
       if (!response.ok) {
@@ -789,7 +793,7 @@ All four fields must be coherent and internally consistent.`;
       const response = await fetch('/api/generate-outline', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ condensedDraft, model, customPrompt: enhancedCustomPrompt, keyElements }),
+        body: JSON.stringify({ condensedDraft, model, customPrompt: enhancedCustomPrompt, keyElements, openaiApiKey: getStoredApiKey() }),
       });
       if (!response.ok) {
         const errData = await response.json();
