@@ -420,6 +420,54 @@ const StoryExpander: React.FC = () => {
     }
   };
 
+  const handleRegenerateChapter = async (chapterIndex: number) => {
+    if (chapterLoading !== null) return;
+    setChapterLoading(chapterIndex);
+    setError('');
+    setRawError('');
+    try {
+      const chapter = chapters[chapterIndex];
+      const customPrompt = chapterPrompts[chapterIndex] || '';
+      setStatus(`Regenerating chapter ${chapterIndex + 1} ("${chapter.title}") with custom prompt...`);
+      const response = await fetch('/api/expand-chapter', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          condensedDraft,
+          title: chapter.title,
+          summary: chapter.summary,
+          keyEvents: chapter.keyEvents || [],
+          characterTraits: chapter.characterTraits || [],
+          timeline: chapter.timeline || 'Unknown timeline',
+          model,
+          customPrompt,
+          chapterIndex,
+          previousChapters: chapters.slice(0, chapterIndex),
+          totalChapters: chapters.length,
+          keyElements,
+        }),
+      });
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.error || `Regeneration for chapter ${chapterIndex + 1} failed`);
+      }
+      const data = await response.json();
+      const newExpanded = [...expandedChapters];
+      newExpanded[chapterIndex] = data.details;
+      setExpandedChapters(newExpanded);
+      const newCounts = [...expansionCounts];
+      newCounts[chapterIndex] = 0;
+      setExpansionCounts(newCounts);
+      setStatus(`Chapter ${chapterIndex + 1} regenerated.`);
+      saveProgress();
+    } catch (err: any) {
+      setError(`Regeneration failed: ${err.message || 'Unknown error'}. Try again.`);
+      setRawError(err.rawResponse || '');
+    } finally {
+      setChapterLoading(null);
+    }
+  };
+
   const handleEditSummaryPrompt = () => {
     setEditingSummaryPrompt(true);
   };
@@ -689,6 +737,13 @@ const StoryExpander: React.FC = () => {
                         className="px-4 py-1 bg-purple-600 text-white rounded-md hover:bg-purple-700 disabled:opacity-50"
                       >
                         {chapterLoading === idx ? 'Expanding...' : 'Expand More'}
+                      </button>
+                      <button
+                        onClick={() => handleRegenerateChapter(idx)}
+                        disabled={chapterLoading !== null}
+                        className="px-4 py-1 bg-yellow-600 text-white rounded-md hover:bg-yellow-700 disabled:opacity-50 ml-2"
+                      >
+                        {chapterLoading === idx ? 'Regenerating...' : 'Regenerate'}
                       </button>
                     </div>
                   </div>
