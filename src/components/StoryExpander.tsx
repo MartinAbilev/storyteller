@@ -810,21 +810,8 @@ All four fields must be coherent and internally consistent.` : '';
     setRawError('');
     setStatus('Regenerating chapter outline with custom prompts...');
     try {
-      // Build per-chapter instructions string
-      const perChapterInstructions = chapterPrompts
-        .map((prompt, idx) => {
-          if (prompt && prompt.trim()) {
-            return `- Chapter ${idx + 1}: ${prompt}`;
-          }
-          return null;
-        })
-        .filter(Boolean)
-        .join('\n');
-
-      // Ensure all chapter metadata fields (summary, key events, character traits, timeline) are regenerated holistically
+      // First, generate base outline with global prompt
       const enhancedCustomPrompt = `${outlinePrompt || summaryPrompt}
-
-${perChapterInstructions ? `Apply the following chapter-specific instructions:\n${perChapterInstructions}\n` : ''}
 
 CRITICAL: When applying the above instructions, you MUST regenerate ALL chapter metadata fields:
 - Update summaries to reflect the custom prompt modifications
@@ -845,7 +832,7 @@ All four fields must be coherent and internally consistent.`;
         throw Object.assign(error, { rawResponse: errData.rawResponse || '' });
       }
       const data = await response.json();
-      const validatedChapters = data.chapters.map((ch: Chapter) => ({
+      let validatedChapters = data.chapters.map((ch: Chapter) => ({
         title: ch.title || 'Untitled Chapter',
         summary: ch.summary || 'No summary available.',
         keyEvents: Array.isArray(ch.keyEvents) ? ch.keyEvents : [],
@@ -853,12 +840,55 @@ All four fields must be coherent and internally consistent.`;
         timeline: ch.timeline || 'Unknown timeline',
       }));
 
+      // Now regenerate chapters with custom prompts
+      for (let idx = 0; idx < chapterPrompts.length && idx < validatedChapters.length; idx++) {
+        const perChapterPrompt = chapterPrompts[idx];
+        if (perChapterPrompt && perChapterPrompt.trim()) {
+          try {
+            setStatus(`Refining Chapter ${idx + 1} with custom prompt...`);
+
+            // Regenerate full outline but with this chapter's custom prompt as the PRIMARY instruction
+            const focusedPrompt = `Generate a 6-10 chapter outline for this novel. CRITICAL REQUIREMENT FOR CHAPTER ${idx + 1}: ${perChapterPrompt}
+
+${enhancedCustomPrompt}
+
+When generating Chapter ${idx + 1}, you MUST ensure the custom requirement is fully incorporated into:
+- The chapter summary
+- The key events
+- The character traits
+- The timeline
+Everything must reflect the instruction: "${perChapterPrompt}"`;
+
+            const perChapterResponse = await fetch('/api/generate-outline', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ condensedDraft, model, customPrompt: focusedPrompt, keyElements, openaiApiKey: getStoredApiKey() }),
+            });
+
+            if (perChapterResponse.ok) {
+              const perChapterData = await perChapterResponse.json();
+              if (perChapterData.chapters && perChapterData.chapters[idx]) {
+                // Replace just this chapter with the refined version
+                const updatedChapter = perChapterData.chapters[idx];
+                validatedChapters[idx] = {
+                  title: updatedChapter.title || validatedChapters[idx].title,
+                  summary: updatedChapter.summary || validatedChapters[idx].summary,
+                  keyEvents: Array.isArray(updatedChapter.keyEvents) ? updatedChapter.keyEvents : validatedChapters[idx].keyEvents,
+                  characterTraits: Array.isArray(updatedChapter.characterTraits) ? updatedChapter.characterTraits : validatedChapters[idx].characterTraits,
+                  timeline: updatedChapter.timeline || validatedChapters[idx].timeline,
+                };
+              }
+            }
+          } catch (perChapterErr: any) {
+            console.warn(`[Frontend] Failed to apply per-chapter prompt to chapter ${idx}: ${perChapterErr.message}`);
+          }
+        }
+      }
+
       // Preserve existing chapter prompts, expanded chapters, and expansion counts
       const newLen = validatedChapters.length;
       const newExpanded = new Array(newLen).fill('');
       const newCounts = new Array(newLen).fill(0);
-
-      // Preserve ALL per-chapter custom prompts from previous outline
       const newPrompts = [...chapterPrompts.slice(0, newLen)];
       while (newPrompts.length < newLen) {
         newPrompts.push('');
