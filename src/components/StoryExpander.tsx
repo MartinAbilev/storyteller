@@ -59,6 +59,7 @@ const StoryExpander: React.FC = () => {
   const [chapterLoading, setChapterLoading] = useState<number | null>(null);
   const [regenerateFromChapterIndex, setRegenerateFromChapterIndex] = useState<number | null>(null);
   const [coverImage, setCoverImage] = useState<string>('');
+  const [bookTitle, setBookTitle] = useState<string>('');
 
   // Helper function to get stored API key
   const getStoredApiKey = (): string => {
@@ -212,6 +213,7 @@ const StoryExpander: React.FC = () => {
           setDraftHash(currentHash);
           setModel(progress.model || model || 'gpt-5-mini');
           setCoverImage(progress.coverImage || '');
+          setBookTitle(progress.bookTitle || '');
           setStatus('Loaded saved progress—draft and prompts restored.');
         } catch (err) {
           console.warn('[Frontend] loadProgress: failed to parse stored progress', err);
@@ -250,6 +252,7 @@ const StoryExpander: React.FC = () => {
       currentChapterIndex,
       model,
       coverImage,
+      bookTitle,
     };
     localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(progress));
     // Also attempt to persist to the backend as story.json (best-effort, non-blocking)
@@ -301,6 +304,8 @@ const StoryExpander: React.FC = () => {
     setCurrentStep(0);
     setCurrentChapterIndex(0);
     setDraftHash('');
+    setCoverImage('');
+    setBookTitle('');
     setStatus('Progress cleared—start over.');
     setError('');
     setRawError('');
@@ -1067,63 +1072,73 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
 
   const fullStory = chapters.map((ch, idx) => `### ${ch.title}\n\n${expandedChapters[idx] || '(Pending)'}\n\n---`).join('\n');
 
+  // Auto-generate cover image when all chapters are complete
+  useEffect(() => {
+    if (chapters.length > 0 &&
+        expandedChapters.every(ch => ch) &&
+        !coverImage &&
+        currentStep === 3 &&
+        currentChapterIndex >= chapters.length) {
+      generateCoverImage();
+    }
+  }, [chapters.length, expandedChapters, coverImage, currentStep, currentChapterIndex]);
+
   // Generate cover image when all chapters are complete
   const generateCoverImage = async () => {
     if (!chapters.length || !expandedChapters.every(ch => ch)) return;
-    if (coverImage) return; // Already have a cover
 
     try {
       const openaiApiKey = getStoredApiKey();
-      setStatus('Generating cover image for the story...');
+      setStatus('Generating book title and cover image...');
 
-      // Generate cover image prompt
-      const coverPromptText = `
-        Create a professional book cover image prompt for this complete story.
-        The prompt should capture the overall theme, mood, and essence of the entire narrative.
-        Make it suitable for DALL-E 3 (concise but descriptive, under 400 characters).
-
-        Story Title: ${chapters[0]?.title || 'Novel'}
-        Number of Chapters: ${chapters.length}
-        Main Characters: ${keyElements?.characters.map(c => c.name).join(', ') || 'Various'}
-        Story Summary: ${condensedDraft.substring(0, 500)}...
-
-        Return ONLY the image prompt text for a book cover, nothing else.
-      `;
-
-      const promptResponse = await fetch('/api/generate-image-prompt', {
+      // First, generate a short book title
+      const titleResponse = await fetch('/api/generate-book-title', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          title: 'Book Cover',
-          summary: condensedDraft.substring(0, 1000),
-          chapterText: '',
+          summary: condensedDraft,
+          characters: keyElements?.characters.map(c => c.name).join(', ') || 'Various',
+          themes: keyElements?.mainStoryLines.join(', ') || 'Adventure',
           model,
           apiKey: openaiApiKey,
         }),
       });
 
-      if (promptResponse.ok) {
-        const promptData = await parseJsonResponse(promptResponse, 'generate-cover-prompt');
-        const coverPrompt = promptData.imagePrompt;
+      let bookTitle = 'Novel';
+      if (titleResponse.ok) {
+        const titleData = await parseJsonResponse(titleResponse, 'generate-book-title');
+        bookTitle = titleData.title || 'Novel';
+        setBookTitle(bookTitle);
+        console.log('[Frontend] Generated book title:', bookTitle);
+      }
 
-        const imageResponse = await fetch('/api/generate-image', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            imagePrompt: coverPrompt,
-            apiKey: openaiApiKey,
-            title: 'Book Cover',
-            summary: condensedDraft.substring(0, 500),
-          }),
-        });
+      setStatus(`Generating cover image with title: "${bookTitle}"...`);
 
-        if (imageResponse.ok) {
-          const imageData = await parseJsonResponse(imageResponse, 'generate-cover-image');
-          if (imageData.imageUrl) {
-            setCoverImage(imageData.imageUrl);
-            setStatus('Cover image generated!');
-          }
+      // Generate cover image prompt (artistic illustration, not text)
+      const coverPromptText = `Professional book cover illustration in artistic style. ${condensedDraft.substring(0, 300)}. Features: ${keyElements?.characters.slice(0, 2).map(c => c.name).join(' and ') || 'main characters'}. Mood: ${keyElements?.mainStoryLines[0] || 'epic adventure'}. Rich colors, dramatic composition, suitable for novel cover art. No text or titles.`;
+
+      const imageResponse = await fetch('/api/generate-image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          imagePrompt: coverPromptText,
+          apiKey: openaiApiKey,
+          title: bookTitle,
+          summary: `Book cover for: ${bookTitle}`,
+        }),
+      });
+
+      if (imageResponse.ok) {
+        const imageData = await parseJsonResponse(imageResponse, 'generate-cover-image');
+        if (imageData.imageUrl) {
+          setCoverImage(imageData.imageUrl);
+          setStatus(`Cover image generated with title: "${bookTitle}"!`);
+          saveProgress();
+        } else if (imageData.error) {
+          setStatus('Cover generation skipped (content filter)');
         }
+      } else {
+        setStatus('Cover image generation failed, continuing anyway');
       }
     } catch (err) {
       console.error('Failed to generate cover image:', err);
@@ -1471,12 +1486,15 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
 
           {/* Action Buttons */}
           <div className="flex gap-3 mb-4 no-print">
-            {!coverImage && expandedChapters.every(ch => ch) && (
+            {expandedChapters.every(ch => ch) && (
               <button
-                onClick={generateCoverImage}
+                onClick={() => {
+                  setCoverImage('');
+                  setTimeout(generateCoverImage, 100);
+                }}
                 className="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700"
               >
-                Generate Cover Image
+                {coverImage ? 'Regenerate' : 'Generate'} Cover Image
               </button>
             )}
             {expandedChapters.every(ch => ch) && (
@@ -1490,19 +1508,34 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
           </div>
 
           {/* Book-style formatted content */}
-          <div className="max-w-4xl mx-auto bg-white">
+          <div className="book-content max-w-4xl mx-auto bg-white">
             {/* Cover Page */}
-            {coverImage && (
-              <div className="mb-12 text-center page-break">
-                <img
-                  src={coverImage}
-                  alt="Book Cover"
-                  className="w-full max-w-2xl mx-auto rounded-lg shadow-2xl mb-6"
-                />
-                <h1 className="text-4xl font-bold text-gray-900 mt-6 mb-2">Complete Story</h1>
-                <p className="text-lg text-gray-600">{chapters.length} Chapters</p>
-              </div>
-            )}
+            <div className="mb-12 text-center page-break">
+              {coverImage ? (
+                <div className="relative inline-block max-w-2xl mx-auto mb-6">
+                  <img
+                    src={coverImage}
+                    alt="Book Cover"
+                    className="w-full rounded-lg shadow-2xl"
+                  />
+                  {/* Title overlay on cover image */}
+                  <div className="absolute inset-0 flex items-center justify-center p-8">
+                    <h1
+                      className="text-5xl md:text-6xl font-bold text-white text-center"
+                      style={{
+                        textShadow: '0 4px 12px rgba(0,0,0,0.9), 0 2px 4px rgba(0,0,0,0.8), 0 0 20px rgba(0,0,0,0.7)',
+                        lineHeight: '1.2'
+                      }}
+                    >
+                      {bookTitle || 'Complete Story'}
+                    </h1>
+                  </div>
+                </div>
+              ) : (
+                <h1 className="text-4xl font-bold text-gray-900 mb-2">{bookTitle || 'Complete Story'}</h1>
+              )}
+              <p className="text-lg text-gray-600">{chapters.length} Chapters</p>
+            </div>
 
             {/* Table of Contents */}
             <div className="mb-12 page-break">
@@ -1519,15 +1552,15 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
             {/* Chapters */}
             {chapters.map((ch, idx) => (
               expandedChapters[idx] && (
-                <div key={idx} className="mb-16 page-break">
-                  <div className="mb-6">
+                <div key={idx} className="mb-16 page-break-before">
+                  <div className="mb-6 avoid-break">
                     <p className="text-sm text-gray-500 uppercase tracking-wide mb-2">Chapter {idx + 1}</p>
                     <h2 className="text-3xl font-bold text-gray-900 mb-6">{ch.title}</h2>
                   </div>
 
                   {/* Chapter Image */}
                   {ch.imageUrl && (
-                    <div className="mb-6">
+                    <div className="mb-6 avoid-break">
                       <img
                         src={ch.imageUrl}
                         alt={`Chapter ${idx + 1}: ${ch.title}`}
@@ -1544,14 +1577,14 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
                   </div>
 
                   {idx < chapters.length - 1 && (
-                    <div className="mt-8 border-b-2 border-gray-200"></div>
+                    <div className="mt-8 border-b-2 border-gray-200 no-print"></div>
                   )}
                 </div>
               )
             ))}
 
             {/* End Page */}
-            <div className="text-center py-12 page-break">
+            <div className="text-center py-12 page-break-before">
               <p className="text-2xl font-serif text-gray-600">~ The End ~</p>
             </div>
           </div>

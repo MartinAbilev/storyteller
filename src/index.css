@@ -8,16 +8,103 @@ body {
 
 /* Page break styles for PDF export */
 @media print {
+  /* Reset and show everything first */
+  * {
+    visibility: visible;
+  }
+
+  /* Then hide the body and all direct children */
+  body,
+  body > * {
+    visibility: hidden;
+    overflow: visible;
+  }
+
+  /* Show book content and make it take up the page */
+  .book-content,
+  .book-content * {
+    visibility: visible !important;
+  }
+
+  .book-content {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    max-width: 100%;
+  }
+
+  /* Explicitly hide no-print elements */
+  .no-print,
+  .no-print * {
+    display: none !important;
+    visibility: hidden !important;
+  }
+
+  .print-only {
+    display: block !important;
+    visibility: visible !important;
+  }
+
+  /* Page break control */
   .page-break {
     page-break-after: always;
     break-after: page;
   }
 
-  .no-print {
+  .page-break-before {
+    page-break-before: always;
+    break-before: page;
+  }
+
+  /* Avoid breaking these elements across pages */
+  .avoid-break {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  /* Chapter styling for print */
+  .chapter-content {
+    page-break-inside: auto;
+  }
+
+  .chapter-content p {
+    orphans: 3;
+    widows: 3;
+  }
+
+  /* Clean white background */
+  body {
+    background-color: white;
+    margin: 0;
+    padding: 0;
+  }
+
+  /* A4 page sizing */
+  @page {
+    size: A4;
+    margin: 2.5cm 2cm;
+  }
+
+  /* Book content styling */
+  .book-content {
+    max-width: 100%;
+    margin: 0 auto;
+    font-size: 12pt;
+    line-height: 1.6;
+  }
+
+  /* Hide browser UI elements */
+  details summary {
     display: none;
   }
 
-  body {
-    background-color: white;
+  details {
+    display: block !important;
+  }
+
+  details[open] {
+    display: block !important;
   }
 }
+

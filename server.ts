@@ -581,6 +581,47 @@ app.post('/api/generate-image-prompt', async (req, res) => {
   }
 });
 
+// Generate a short book title
+app.post('/api/generate-book-title', async (req, res) => {
+  try {
+    const { summary, characters, themes, model, apiKey } = req.body;
+    if (!summary) {
+      return res.status(400).json({ error: 'Story summary required' });
+    }
+
+    const keyError = validateApiKey(apiKey);
+    if (keyError) return res.status(401).json({ error: keyError });
+    const openaiClient = getOpenAIClient(apiKey);
+
+    const titlePrompt = `
+      Based on this story, create a compelling, concise book title (2-6 words maximum).
+
+      Story Summary: ${summary.substring(0, 1000)}
+      Main Characters: ${characters || 'Various'}
+      Key Themes: ${themes || 'Adventure'}
+
+      Return ONLY the book title as plain text, no quotes, no extra words, just the title.
+    `;
+
+    const bookTitle = await generateWithModel(titlePrompt, model, openaiClient);
+    const cleanTitle = bookTitle.replace(/["'`]/g, '').trim();
+
+    console.log(`[Backend] Generated book title: ${cleanTitle}`);
+
+    return res.json({ title: cleanTitle });
+  } catch (error: any) {
+    console.error(`[Backend] Book title generation error: ${error.message || error}`);
+    try {
+      return res.status(500).json({ error: `Title generation failed: ${error.message || 'Unknown error'}` });
+    } catch (sendError) {
+      console.error(`[Backend] Failed to send error response: ${sendError}`);
+      if (!res.headersSent) {
+        return res.status(500).json({ error: 'Internal server error' });
+      }
+    }
+  }
+});
+
 // Generate image using DALL-E 3
 app.post('/api/generate-image', async (req, res) => {
   try {
