@@ -255,17 +255,32 @@ app.post('/api/generate-outline', async (req, res) => {
     const openaiClient = getOpenAIClient(openaiApiKey);
     console.log(`[Backend] Generating outline (~${estimateTokens(condensedDraft)} tokens)`);
     const outlinePrompt = `
-      Analyze this condensed novel draft and extract key elements to create a rich, detailed outline for 6-10 high-level chapters.
-      Use these key elements: ${JSON.stringify(keyElements)}.
-      For each chapter:
-      - Title (catchy, 1 line).
-      - Summary (5-7 sentences, including key events, character developments, unique details).
-      - Key Events (3-5 bullet points).
-      - Character Traits Involved (list main characters with traits as strings, e.g., "Character A: trait, agenda").
-      - Timeline Position (e.g., Day 1-3).
+      Create a detailed outline for 6-10 chapters that PROGRESSES the story chronologically from beginning to end.
+
+      CRITICAL: Each chapter must cover DIFFERENT events that move the story forward in time.
+      DO NOT assign the same events to multiple chapters.
+      Each chapter should represent a distinct phase or progression in the narrative timeline.
+
+      Use these key elements from the story: ${JSON.stringify(keyElements)}.
+
+      For each chapter, provide:
+      - Title: Catchy, descriptive (1 line)
+      - Summary: 5-7 sentences describing WHAT HAPPENS in this specific chapter, including character developments and plot progression
+      - Key Events: 3-5 bullet points of UNIQUE events that occur ONLY in this chapter (not repeated in other chapters)
+      - Character Traits Involved: Main characters active in this chapter with their traits (e.g., "Character A: determined, conflicted")
+      - Timeline Position: When this chapter occurs (e.g., "Day 1-3", "Week 2", "The Beginning", "The Climax")
+
+      IMPORTANT:
+      - Distribute events across chapters so the story PROGRESSES chronologically
+      - Each chapter should advance the plot with NEW developments
+      - The first chapter should establish/introduce, middle chapters should develop/complicate, final chapter should resolve/conclude
+      - Avoid repeating the same event across multiple chapters
+
       ${customPrompt ? `Additional instructions: ${customPrompt}` : ''}
-      Output a valid JSON array: [{ "title": "...", "summary": "...", "keyEvents": ["..."], "characterTraits": ["..."], "timeline": "..." }].
-      Ensure the response is strictly JSON, with no Markdown, code fences, or extra text.
+
+      Output ONLY valid JSON array with NO markdown, code fences, or extra text:
+      [{ "title": "...", "summary": "...", "keyEvents": ["..."], "characterTraits": ["..."], "timeline": "..." }]
+
       Condensed Draft: ${condensedDraft.substring(0, 10000)}... (trimmed)
     `;
     const outlineText = await generateWithModel(outlinePrompt, model, openaiClient);
@@ -293,16 +308,25 @@ app.post('/api/generate-outline', async (req, res) => {
       console.error(`[Backend] JSON parse error: ${parseError.message}, raw response: ${cleanedText.slice(0, 500)}...`);
       console.log(`[Backend] Retrying with stricter prompt...`);
       const strictPrompt = `
-        Create a JSON array of 6-10 chapters based on this condensed novel draft.
+        Create a JSON array of 6-10 chapters that PROGRESS the story chronologically from beginning to end.
+
+        CRITICAL: Each chapter must have DISTINCT events. Do not repeat events across chapters.
+        Distribute events so the story moves forward in time with each chapter.
+
         Use these key elements: ${JSON.stringify(keyElements)}.
+
         Each chapter must have:
-        - title: Catchy, 1 line.
-        - summary: 5-7 sentences with key events and details.
-        - keyEvents: 3-5 bullet points as an array.
-        - characterTraits: Array of main characters with traits as strings.
-        - timeline: Position (e.g., Day 1-3).
+        - title: Catchy, descriptive (1 line)
+        - summary: 5-7 sentences describing what happens in THIS specific chapter
+        - keyEvents: 3-5 UNIQUE events as an array (not repeated in other chapters)
+        - characterTraits: Array of main characters with traits as strings
+        - timeline: When this occurs (e.g., "Day 1-3", "Week 2")
+
         ${customPrompt ? `Additional instructions: ${customPrompt}` : ''}
-        Output strictly JSON: [{ "title": "...", "summary": "...", "keyEvents": ["..."], "characterTraits": ["..."], "timeline": "..." }].
+
+        Output ONLY strictly valid JSON with NO markdown or code fences:
+        [{ "title": "...", "summary": "...", "keyEvents": ["..."], "characterTraits": ["..."], "timeline": "..." }]
+
         Draft: ${condensedDraft.substring(0, 10000)}...
       `;
       const retryText = await generateWithModel(strictPrompt, model, openaiClient);
@@ -383,58 +407,55 @@ app.post('/api/expand-chapter', async (req, res) => {
     };
 
     let previousContext = '';
+    let eventsAlreadyCovered: string[] = [];
     if (chapterIndex > 0 && previousChapters && Array.isArray(previousChapters)) {
-      previousContext = 'Previous Chapters Context:\n';
+      previousContext = 'EVENTS ALREADY COVERED IN PREVIOUS CHAPTERS (DO NOT REPEAT THESE):\n';
       previousChapters.forEach((ch: { title: string; summary: string; keyEvents: string[]; characterTraits: string[]; timeline: string }, idx: number) => {
-        // if (idx < chapterIndex) {
-        //   previousContext += `Chapter ${idx + 1}: ${ch.title}\nSummary: ${ch.summary}\nKey Events: ${ch.keyEvents.join(', ')}\nCharacter Traits: ${ch.characterTraits.join(', ')}\nTimeline: ${ch.timeline}\n\n`;
-        // }
+        previousContext += `Chapter ${idx + 1}: ${ch.title} - ${ch.summary}\n`;
+        if (Array.isArray(ch.keyEvents)) {
+          ch.keyEvents.forEach(event => eventsAlreadyCovered.push(event));
+          previousContext += `Events: ${ch.keyEvents.join('; ')}\n`;
+        }
+        previousContext += `Timeline: ${ch.timeline}\n\n`;
       });
-      previousContext = previousContext.substring(0, 1000 * chapterIndex);
+      // Limit context size but keep it informative
+      previousContext = previousContext.substring(0, 2000);
     }
 
     // Add finale instruction for the last chapter
     const isFinalChapter = chapterIndex === totalChapters - 1;
     const finaleInstruction = isFinalChapter
-      ? 'This is the final chapter. Conclude the story with a climactic, cohesive ending, resolving key plotlines and character arcs'
+      ? '\n\nCRITICAL: This is the FINAL chapter. You must conclude the entire story with a climactic, satisfying ending that resolves all major plotlines and character arcs. Bring the story to a definitive close.'
       : '';
 
-    const expandPromptOld = `
-      Expand and this chapter as continution of previous context and into a detailed, coherent narrative (800-1500 words).
-      Use vivid, immersive language matching the original draft's style/tone. Ensure plot continuity.
-      ${previousContext ? `${previousContext}\n` : ''}
-      ${finaleInstruction ? `${finaleInstruction}\n` : ''}
-      ${customPrompt ? `Additional instructions: ${customPrompt}` : ''}
-      take into acount full context: ${condensedDraft.substring(0, 5000)}...
-      Title: ${title}. Summary: ${summary}
-
-      make chapters begining diferent from previous chapters. dont make same begining of chapter as previous
-    `;
-
     const expandPrompt = `
-      Expand this chapter into a detailed, coherent narrative (800-1500 words) based strictly on the provided chapter summary and key events.
-      Focus only on the events, characters, and details relevant to this chapter, as specified below.
-      Use vivid, immersive language matching the original draft's style/tone.
-      Ensure plot continuity with previous chapters, if any.
-      Start the chapter with a unique opening that avoids repetition with other chapters, emphasizing the specific events and timeline of this chapter.
-      Only use the provided Chapter Key Events and Relevant Key Events; ignore any other events from the full draft context.
+      You are writing Chapter ${chapterIndex + 1} of ${totalChapters} in a multi-chapter story.
 
-      Relevant Characters: ${JSON.stringify(relevantCharacters)}.
-      Relevant Key Events: ${JSON.stringify(relevantKeyEvents)}.
-      Relevant Unique Details: ${JSON.stringify(relevantKeyElements.uniqueDetails)}.
-      ${previousContext ? `${previousContext}\n` : ''}
-      ${finaleInstruction ? `${finaleInstruction}\n` : ''}
+      CRITICAL INSTRUCTION: This chapter must ADVANCE the plot forward. DO NOT retell or repeat events from previous chapters.
+      Each chapter should cover NEW story beats and move the narrative timeline forward.
+      ${chapterIndex > 0 ? 'The previous chapters have ALREADY covered certain events - you must START this chapter AFTER those events and move the story FORWARD with NEW developments.' : 'This is the first chapter - establish the story foundation.'}
 
-      ${customPrompt ? `Additional instructions: ${customPrompt}` : ''}
+      ${previousContext}
 
-      Chapter Title: ${title}
-      Chapter Summary: ${summary}
-      Chapter Key Events: ${JSON.stringify(safeKeyEvents)}
-      Chapter Timeline: ${timeline || 'Unknown timeline'}
+      YOUR TASK FOR THIS CHAPTER:
+      Chapter ${chapterIndex + 1} Title: ${title}
+      Chapter ${chapterIndex + 1} Summary: ${summary}
+      Chapter ${chapterIndex + 1} Key Events (NEW events for THIS chapter only): ${JSON.stringify(safeKeyEvents)}
+      Timeline Position: ${timeline || 'Unknown timeline'}
 
-      make chapter begining diferent from previous chapters. dont make same begining of chapter as previous
+      INSTRUCTIONS:
+      1. Write 800-1500 words focusing ONLY on the events and developments specified for THIS chapter
+      2. DO NOT repeat or retell events from previous chapters listed above
+      3. Start where the previous chapter left off and ADVANCE the story chronologically
+      4. Use unique opening and narrative structure - avoid repeating patterns from other chapters
+      5. Focus on these specific characters for this chapter: ${JSON.stringify(relevantCharacters)}
+      6. Incorporate these unique details: ${JSON.stringify(relevantKeyElements.uniqueDetails)}
+      7. Match the original draft's tone and style: ${condensedDraft.substring(0, 1500)}... (style reference only)
 
-      Full Draft Context (for tone and style only, do not use events): ${condensedDraft.substring(0, 2000)}... (trimmed)
+      ${finaleInstruction}
+      ${customPrompt ? `\nAdditional custom instructions: ${customPrompt}` : ''}
+
+      Write the chapter now, ensuring it contains NEW story content that moves the plot forward:
     `;
 
 
@@ -463,6 +484,145 @@ app.post('/api/expand-chapter', async (req, res) => {
   }
 });
 
+// Expand chapter further (adds more content to existing chapter)
+app.post('/api/expand-chapter-more', async (req, res) => {
+  try {
+    const { condensedDraft, title, summary, model, customPrompt, chapterIndex, previousChapters, totalChapters, keyElements, keyEvents, characterTraits, timeline, existingDetails, openaiApiKey } = req.body;
+    if (!title || !summary || !existingDetails) return res.status(400).json({ error: 'Chapter title, summary, and existing details required' });
+
+    const keyError = validateApiKey(openaiApiKey);
+    if (keyError) {
+      return res.status(401).json({ error: keyError });
+    }
+
+    const openaiClient = getOpenAIClient(openaiApiKey);
+    console.log(`[Backend] Expanding chapter "${title}" further (index: ${chapterIndex})`);
+
+    const expandMorePrompt = `
+      You are expanding Chapter ${chapterIndex + 1} of ${totalChapters} with additional details and depth.
+
+      EXISTING CHAPTER CONTENT:
+      ${existingDetails}
+
+      YOUR TASK:
+      Expand this chapter by adding more depth, detail, and narrative richness. Add 500-800 more words that:
+      1. Deepen character development and interactions
+      2. Add more sensory details and atmosphere
+      3. Expand on key moments with more vivid description
+      4. Maintain consistency with the existing content
+      5. Keep the same narrative flow and tone
+
+      Chapter Title: ${title}
+      Chapter Summary: ${summary}
+      Timeline: ${timeline || 'Unknown timeline'}
+
+      ${customPrompt ? `Additional instructions: ${customPrompt}` : ''}
+
+      Write the COMPLETE expanded chapter (combining existing + new content):
+    `;
+
+    const details = await generateWithModel(expandMorePrompt, model, openaiClient);
+    console.log(`[Backend] Expanded chapter further: ${details.length} chars`);
+
+    return res.json({ details });
+  } catch (error: any) {
+    console.error(`[Backend] Expand-more error: ${error.message || error}`);
+    try {
+      return res.status(500).json({ error: `Chapter expansion failed: ${error.message || 'Unknown error'}` });
+    } catch (sendError) {
+      console.error(`[Backend] Failed to send error response: ${sendError}`);
+      if (!res.headersSent) {
+        return res.status(500).json({ error: 'Internal server error' });
+      }
+    }
+  }
+});
+
+
+// Generate image prompt for a chapter
+app.post('/api/generate-image-prompt', async (req, res) => {
+  try {
+    const { title, summary, chapterText, model, apiKey } = req.body;
+    if (!title || !summary) {
+      return res.status(400).json({ error: 'Chapter title and summary required' });
+    }
+
+    const keyError = validateApiKey(apiKey);
+    if (keyError) return res.status(401).json({ error: keyError });
+    const openaiClient = getOpenAIClient(apiKey);
+
+    const promptText = `
+      Generate a detailed, vivid image generation prompt for this chapter.
+      The prompt should capture the key visual elements, atmosphere, and mood of the chapter.
+      Make it suitable for DALL-E 3 image generation (concise but descriptive, under 400 characters).
+      Focus on the most visually striking or representative scene from the chapter.
+
+      Chapter Title: ${title}
+      Chapter Summary: ${summary}
+      ${chapterText ? `Chapter Content Preview: ${chapterText.substring(0, 1000)}...` : ''}
+
+      Return ONLY the image prompt text, nothing else.
+    `;
+
+    const imagePrompt = await generateWithModel(promptText, model, openaiClient);
+    console.log(`[Backend] Generated image prompt for "${title}": ${imagePrompt.substring(0, 100)}...`);
+
+    return res.json({ imagePrompt: imagePrompt.trim() });
+  } catch (error: any) {
+    console.error(`[Backend] Image prompt generation error: ${error.message || error}`);
+    try {
+      return res.status(500).json({ error: `Image prompt generation failed: ${error.message || 'Unknown error'}` });
+    } catch (sendError) {
+      console.error(`[Backend] Failed to send error response: ${sendError}`);
+      if (!res.headersSent) {
+        return res.status(500).json({ error: 'Internal server error' });
+      }
+    }
+  }
+});
+
+// Generate image using DALL-E 3
+app.post('/api/generate-image', async (req, res) => {
+  try {
+    const { imagePrompt, apiKey } = req.body;
+    if (!imagePrompt) {
+      return res.status(400).json({ error: 'Image prompt required' });
+    }
+
+    const keyError = validateApiKey(apiKey);
+    if (keyError) return res.status(401).json({ error: keyError });
+    const openaiClient = getOpenAIClient(apiKey);
+
+    console.log(`[Backend] Generating image with DALL-E 3: ${imagePrompt.substring(0, 100)}...`);
+
+    const response = await openaiClient.images.generate({
+      model: 'dall-e-3',
+      prompt: imagePrompt,
+      n: 1,
+      size: '1024x1024',
+      quality: 'standard',
+    });
+
+    if (!response.data || !response.data[0]?.url) {
+      throw new Error('No image URL returned from DALL-E 3');
+    }
+
+    const imageUrl = response.data[0].url;
+
+    console.log(`[Backend] Generated image URL: ${imageUrl}`);
+    return res.json({ imageUrl });
+  } catch (error: any) {
+    console.error(`[Backend] Image generation error: ${error.message || error}`);
+    try {
+      return res.status(500).json({ error: `Image generation failed: ${error.message || 'Unknown error'}` });
+    } catch (sendError) {
+      console.error(`[Backend] Failed to send error response: ${sendError}`);
+      if (!res.headersSent) {
+        return res.status(500).json({ error: 'Internal server error' });
+      }
+    }
+  }
+});
 
 // Save full story state to story.json (frontend should POST the entire progress/state)
 app.post('/api/save-state', async (req, res) => {

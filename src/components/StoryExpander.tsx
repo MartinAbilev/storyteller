@@ -25,6 +25,8 @@ interface Chapter {
   timeline?: string;
   expansionCount?: number;
   customPrompt?: string;
+  imagePrompt?: string;
+  imageUrl?: string;
 }
 
 const LOCAL_STORAGE_KEY = 'storyExpanderProgress';
@@ -612,6 +614,58 @@ All four fields must be coherent and internally consistent.` : '';
         const newExpanded = [...expandedChapters];
         newExpanded[currentChapterIndex] = data.details;
         setExpandedChapters(newExpanded);
+
+        // Generate image prompt for the chapter
+        setStatus(`Generating image prompt for chapter ${currentChapterIndex + 1}...`);
+        const imagePromptResponse = await fetch('/api/generate-image-prompt', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: chapter.title,
+            summary: chapter.summary,
+            chapterText: data.details,
+            model,
+            apiKey: openaiApiKey,
+          }),
+        });
+
+        let imagePrompt = '';
+        let imageUrl = '';
+
+        if (imagePromptResponse.ok) {
+          const imagePromptData = await parseJsonResponse(imagePromptResponse, 'generate-image-prompt');
+          imagePrompt = imagePromptData.imagePrompt;
+
+          // Generate image using DALL-E 3
+          setStatus(`Generating image for chapter ${currentChapterIndex + 1}...`);
+          const imageResponse = await fetch('/api/generate-image', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              imagePrompt,
+              apiKey: openaiApiKey,
+            }),
+          });
+
+          if (imageResponse.ok) {
+            const imageData = await parseJsonResponse(imageResponse, 'generate-image');
+            imageUrl = imageData.imageUrl;
+          } else {
+            console.warn(`Failed to generate image for chapter ${currentChapterIndex + 1}`);
+          }
+        } else {
+          console.warn(`Failed to generate image prompt for chapter ${currentChapterIndex + 1}`);
+        }
+
+        // Update chapter with image prompt and URL
+        const newChapters = [...chapters];
+        newChapters[currentChapterIndex] = {
+          ...newChapters[currentChapterIndex],
+          imagePrompt,
+          imageUrl,
+        };
+        setChapters(newChapters);
+
         setCurrentChapterIndex(currentChapterIndex + 1);
         setStatus(`Chapter ${currentChapterIndex + 1} expanded (see below).`);
         saveProgress();
@@ -741,6 +795,52 @@ All four fields must be coherent and internally consistent.` : '';
       const newCounts = [...expansionCounts];
       newCounts[chapterIndex] = 0;
       setExpansionCounts(newCounts);
+
+      // Regenerate image prompt and image
+      setStatus(`Regenerating image for chapter ${chapterIndex + 1}...`);
+      const imagePromptResponse = await fetch('/api/generate-image-prompt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: chapter.title,
+          summary: chapter.summary,
+          chapterText: data.details,
+          model,
+          apiKey: openaiApiKey,
+        }),
+      });
+
+      let imagePrompt = '';
+      let imageUrl = '';
+
+      if (imagePromptResponse.ok) {
+        const imagePromptData = await parseJsonResponse(imagePromptResponse, 'generate-image-prompt');
+        imagePrompt = imagePromptData.imagePrompt;
+
+        const imageResponse = await fetch('/api/generate-image', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            imagePrompt,
+            apiKey: openaiApiKey,
+          }),
+        });
+
+        if (imageResponse.ok) {
+          const imageData = await parseJsonResponse(imageResponse, 'generate-image');
+          imageUrl = imageData.imageUrl;
+        }
+      }
+
+      // Update chapter with new image info
+      const newChapters = [...chapters];
+      newChapters[chapterIndex] = {
+        ...newChapters[chapterIndex],
+        imagePrompt,
+        imageUrl,
+      };
+      setChapters(newChapters);
+
       setStatus(`Chapter ${chapterIndex + 1} regenerated.`);
       saveProgress();
     } catch (err: any) {
@@ -1265,6 +1365,18 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
                     <p className="text-sm text-gray-600 italic mb-2">Custom Prompt: {chapterPrompts[idx] || 'None'}</p>
                   )}
                   <p className="text-sm text-gray-600 italic mb-2">Summary: {chapter.summary}</p>
+                  {chapter.imageUrl && (
+                    <div className="my-4">
+                      <img
+                        src={chapter.imageUrl}
+                        alt={`Illustration for ${chapter.title}`}
+                        className="w-full max-w-2xl rounded-lg shadow-md"
+                      />
+                      {chapter.imagePrompt && (
+                        <p className="text-xs text-gray-500 italic mt-2">Image prompt: {chapter.imagePrompt}</p>
+                      )}
+                    </div>
+                  )}
                   <div className="prose max-w-none text-gray-700">
                     <p>{expandedChapters[idx]}</p>
                   </div>
