@@ -584,7 +584,7 @@ app.post('/api/generate-image-prompt', async (req, res) => {
 // Generate image using DALL-E 3
 app.post('/api/generate-image', async (req, res) => {
   try {
-    const { imagePrompt, apiKey } = req.body;
+    const { imagePrompt, apiKey, title, summary } = req.body;
     if (!imagePrompt) {
       return res.status(400).json({ error: 'Image prompt required' });
     }
@@ -595,22 +595,59 @@ app.post('/api/generate-image', async (req, res) => {
 
     console.log(`[Backend] Generating image with DALL-E 3: ${imagePrompt.substring(0, 100)}...`);
 
-    const response = await openaiClient.images.generate({
-      model: 'dall-e-3',
-      prompt: imagePrompt,
-      n: 1,
-      size: '1024x1024',
-      quality: 'standard',
-    });
+    try {
+      const response = await openaiClient.images.generate({
+        model: 'dall-e-3',
+        prompt: imagePrompt,
+        n: 1,
+        size: '1024x1024',
+        quality: 'standard',
+      });
 
-    if (!response.data || !response.data[0]?.url) {
-      throw new Error('No image URL returned from DALL-E 3');
+      if (!response.data || !response.data[0]?.url) {
+        throw new Error('No image URL returned from DALL-E 3');
+      }
+
+      const imageUrl = response.data[0].url;
+
+      console.log(`[Backend] Generated image URL: ${imageUrl}`);
+      return res.json({ imageUrl });
+    } catch (imageError: any) {
+      // Check if it's a safety system rejection
+      if (imageError.message && imageError.message.includes('safety system')) {
+        console.log(`[Backend] Image rejected by safety system, attempting with sanitized prompt...`);
+
+        // Generate a more generic, safe prompt
+        const safePrompt = `A book cover illustration for a chapter titled "${title || 'Story Chapter'}". Professional, artistic style, appropriate for general audiences. Focus on mood and atmosphere rather than specific content.`;
+
+        console.log(`[Backend] Retry with safe prompt: ${safePrompt}`);
+
+        try {
+          const retryResponse = await openaiClient.images.generate({
+            model: 'dall-e-3',
+            prompt: safePrompt,
+            n: 1,
+            size: '1024x1024',
+            quality: 'standard',
+          });
+
+          if (!retryResponse.data || !retryResponse.data[0]?.url) {
+            throw new Error('No image URL returned from DALL-E 3 on retry');
+          }
+
+          const imageUrl = retryResponse.data[0].url;
+          console.log(`[Backend] Generated image with safe prompt: ${imageUrl}`);
+          return res.json({ imageUrl, usedSafePrompt: true });
+        } catch (retryError: any) {
+          console.warn(`[Backend] Safe prompt also failed: ${retryError.message}`);
+          // Return success but no image - UI will handle this gracefully
+          return res.json({ imageUrl: null, error: 'Could not generate safe image for this chapter' });
+        }
+      }
+
+      // Re-throw if it's not a safety issue
+      throw imageError;
     }
-
-    const imageUrl = response.data[0].url;
-
-    console.log(`[Backend] Generated image URL: ${imageUrl}`);
-    return res.json({ imageUrl });
   } catch (error: any) {
     console.error(`[Backend] Image generation error: ${error.message || error}`);
     try {

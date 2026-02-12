@@ -58,6 +58,7 @@ const StoryExpander: React.FC = () => {
   const [draftHash, setDraftHash] = useState<string>('');
   const [chapterLoading, setChapterLoading] = useState<number | null>(null);
   const [regenerateFromChapterIndex, setRegenerateFromChapterIndex] = useState<number | null>(null);
+  const [coverImage, setCoverImage] = useState<string>('');
 
   // Helper function to get stored API key
   const getStoredApiKey = (): string => {
@@ -210,6 +211,7 @@ const StoryExpander: React.FC = () => {
           setCurrentChapterIndex(progress.currentChapterIndex || 0);
           setDraftHash(currentHash);
           setModel(progress.model || model || 'gpt-5-mini');
+          setCoverImage(progress.coverImage || '');
           setStatus('Loaded saved progress—draft and prompts restored.');
         } catch (err) {
           console.warn('[Frontend] loadProgress: failed to parse stored progress', err);
@@ -247,6 +249,7 @@ const StoryExpander: React.FC = () => {
       currentStep,
       currentChapterIndex,
       model,
+      coverImage,
     };
     localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(progress));
     // Also attempt to persist to the backend as story.json (best-effort, non-blocking)
@@ -644,12 +647,17 @@ All four fields must be coherent and internally consistent.` : '';
             body: JSON.stringify({
               imagePrompt,
               apiKey: openaiApiKey,
+              title: chapter.title,
+              summary: chapter.summary,
             }),
           });
 
           if (imageResponse.ok) {
             const imageData = await parseJsonResponse(imageResponse, 'generate-image');
-            imageUrl = imageData.imageUrl;
+            imageUrl = imageData.imageUrl || '';
+            if (!imageUrl && imageData.error) {
+              console.warn(`Image generation: ${imageData.error}`);
+            }
           } else {
             console.warn(`Failed to generate image for chapter ${currentChapterIndex + 1}`);
           }
@@ -671,6 +679,8 @@ All four fields must be coherent and internally consistent.` : '';
         saveProgress();
         if (currentChapterIndex + 1 === chapters.length) {
           setStatus('All chapters expanded—full story ready!');
+          // Generate cover image after all chapters are done
+          setTimeout(() => generateCoverImage(), 1000);
         }
       }
     } catch (err: any) {
@@ -823,12 +833,17 @@ All four fields must be coherent and internally consistent.` : '';
           body: JSON.stringify({
             imagePrompt,
             apiKey: openaiApiKey,
+            title: chapter.title,
+            summary: chapter.summary,
           }),
         });
 
         if (imageResponse.ok) {
           const imageData = await parseJsonResponse(imageResponse, 'generate-image');
-          imageUrl = imageData.imageUrl;
+          imageUrl = imageData.imageUrl || '';
+          if (!imageUrl && imageData.error) {
+            console.warn(`Image generation: ${imageData.error}`);
+          }
         }
       }
 
@@ -1051,6 +1066,69 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
   }, [currentStep, currentChapterIndex, chapters.length, condensedDraft]);
 
   const fullStory = chapters.map((ch, idx) => `### ${ch.title}\n\n${expandedChapters[idx] || '(Pending)'}\n\n---`).join('\n');
+
+  // Generate cover image when all chapters are complete
+  const generateCoverImage = async () => {
+    if (!chapters.length || !expandedChapters.every(ch => ch)) return;
+    if (coverImage) return; // Already have a cover
+
+    try {
+      const openaiApiKey = getStoredApiKey();
+      setStatus('Generating cover image for the story...');
+
+      // Generate cover image prompt
+      const coverPromptText = `
+        Create a professional book cover image prompt for this complete story.
+        The prompt should capture the overall theme, mood, and essence of the entire narrative.
+        Make it suitable for DALL-E 3 (concise but descriptive, under 400 characters).
+
+        Story Title: ${chapters[0]?.title || 'Novel'}
+        Number of Chapters: ${chapters.length}
+        Main Characters: ${keyElements?.characters.map(c => c.name).join(', ') || 'Various'}
+        Story Summary: ${condensedDraft.substring(0, 500)}...
+
+        Return ONLY the image prompt text for a book cover, nothing else.
+      `;
+
+      const promptResponse = await fetch('/api/generate-image-prompt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: 'Book Cover',
+          summary: condensedDraft.substring(0, 1000),
+          chapterText: '',
+          model,
+          apiKey: openaiApiKey,
+        }),
+      });
+
+      if (promptResponse.ok) {
+        const promptData = await parseJsonResponse(promptResponse, 'generate-cover-prompt');
+        const coverPrompt = promptData.imagePrompt;
+
+        const imageResponse = await fetch('/api/generate-image', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            imagePrompt: coverPrompt,
+            apiKey: openaiApiKey,
+            title: 'Book Cover',
+            summary: condensedDraft.substring(0, 500),
+          }),
+        });
+
+        if (imageResponse.ok) {
+          const imageData = await parseJsonResponse(imageResponse, 'generate-cover-image');
+          if (imageData.imageUrl) {
+            setCoverImage(imageData.imageUrl);
+            setStatus('Cover image generated!');
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Failed to generate cover image:', err);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -1388,12 +1466,95 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
       )}
 
       {fullStory && chapters.some((_, idx) => expandedChapters[idx]) && (
-        <details open={currentStep === 3 && currentChapterIndex >= chapters.length} className="bg-white p-6 rounded-lg shadow-md">
-          <summary className="cursor-pointer font-medium text-blue-600 mb-2">Final Expanded Story</summary>
-          <div
-            className="prose max-w-none prose-headings:text-lg prose-headings:font-semibold prose-p:leading-relaxed"
-            dangerouslySetInnerHTML={{ __html: fullStory.replace(/\n/g, '<br>').replace(/### /g, '<h3>') }}
-          />
+        <details open={currentStep === 3 && currentChapterIndex >= chapters.length} className="bg-white p-8 rounded-lg shadow-md">
+          <summary className="cursor-pointer font-medium text-blue-600 mb-4">Final Expanded Story (Book Format)</summary>
+
+          {/* Action Buttons */}
+          <div className="flex gap-3 mb-4 no-print">
+            {!coverImage && expandedChapters.every(ch => ch) && (
+              <button
+                onClick={generateCoverImage}
+                className="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700"
+              >
+                Generate Cover Image
+              </button>
+            )}
+            {expandedChapters.every(ch => ch) && (
+              <button
+                onClick={() => window.print()}
+                className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700"
+              >
+                Print / Export to PDF
+              </button>
+            )}
+          </div>
+
+          {/* Book-style formatted content */}
+          <div className="max-w-4xl mx-auto bg-white">
+            {/* Cover Page */}
+            {coverImage && (
+              <div className="mb-12 text-center page-break">
+                <img
+                  src={coverImage}
+                  alt="Book Cover"
+                  className="w-full max-w-2xl mx-auto rounded-lg shadow-2xl mb-6"
+                />
+                <h1 className="text-4xl font-bold text-gray-900 mt-6 mb-2">Complete Story</h1>
+                <p className="text-lg text-gray-600">{chapters.length} Chapters</p>
+              </div>
+            )}
+
+            {/* Table of Contents */}
+            <div className="mb-12 page-break">
+              <h2 className="text-3xl font-bold text-gray-900 mb-6 border-b-2 border-gray-300 pb-2">Table of Contents</h2>
+              <ul className="space-y-2">
+                {chapters.map((ch, idx) => (
+                  <li key={idx} className="text-gray-700">
+                    <span className="font-semibold">Chapter {idx + 1}:</span> {ch.title}
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            {/* Chapters */}
+            {chapters.map((ch, idx) => (
+              expandedChapters[idx] && (
+                <div key={idx} className="mb-16 page-break">
+                  <div className="mb-6">
+                    <p className="text-sm text-gray-500 uppercase tracking-wide mb-2">Chapter {idx + 1}</p>
+                    <h2 className="text-3xl font-bold text-gray-900 mb-6">{ch.title}</h2>
+                  </div>
+
+                  {/* Chapter Image */}
+                  {ch.imageUrl && (
+                    <div className="mb-6">
+                      <img
+                        src={ch.imageUrl}
+                        alt={`Chapter ${idx + 1}: ${ch.title}`}
+                        className="w-full rounded-lg shadow-lg"
+                      />
+                    </div>
+                  )}
+
+                  {/* Chapter Content */}
+                  <div className="prose prose-lg max-w-none leading-relaxed text-gray-800">
+                    {expandedChapters[idx].split('\n\n').map((paragraph, pIdx) => (
+                      <p key={pIdx} className="mb-4 text-justify indent-8">{paragraph}</p>
+                    ))}
+                  </div>
+
+                  {idx < chapters.length - 1 && (
+                    <div className="mt-8 border-b-2 border-gray-200"></div>
+                  )}
+                </div>
+              )
+            ))}
+
+            {/* End Page */}
+            <div className="text-center py-12 page-break">
+              <p className="text-2xl font-serif text-gray-600">~ The End ~</p>
+            </div>
+          </div>
         </details>
       )}
     </div>
