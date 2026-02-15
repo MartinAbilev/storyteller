@@ -13,6 +13,9 @@ const PORT = 3001;
 app.use(cors());
 app.use(express.json({ limit: '500mb' }));
 
+// Serve static images from dist/images directory
+app.use('/images', express.static(path.join(process.cwd(), 'dist/images')));
+
 // Error handler for JSON parsing issues
 // app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
 //   if (err instanceof SyntaxError && 'body' in err) {
@@ -633,6 +636,40 @@ app.post('/api/generate-book-title', async (req, res) => {
   }
 });
 
+// Helper function to download and cache images
+const downloadAndCacheImage = async (tempImageUrl: string, imageType: string, filename: string, requestOrigin?: string): Promise<string> => {
+  try {
+    // Create images directory if it doesn't exist
+    const imagesDir = path.join(process.cwd(), 'dist/images', imageType);
+    try {
+      await fs.mkdir(imagesDir, { recursive: true });
+    } catch (mkdirErr: any) {
+      // Directory might already exist, continue
+    }
+
+    // Download the image from temporary URL
+    const imageResponse = await fetch(tempImageUrl);
+    if (!imageResponse.ok) {
+      throw new Error(`Failed to download image: ${imageResponse.statusText}`);
+    }
+
+    const buffer = await imageResponse.arrayBuffer();
+    const filePath = path.join(imagesDir, filename);
+
+    // Save image to disk - convert ArrayBuffer to Buffer
+    await fs.writeFile(filePath, Buffer.from(buffer));
+    console.log(`[Backend] Cached image to ${filePath}`);
+
+    // Use relative URL for cached images (works across all origins/reloads)
+    const localUrl = `/images/${imageType}/${filename}`;
+    return localUrl;
+  } catch (cacheErr: any) {
+    console.warn(`[Backend] Failed to cache image: ${cacheErr.message}, using temporary URL`);
+    // If caching fails, return the temporary URL as fallback
+    return tempImageUrl;
+  }
+};
+
 // Generate image using DALL-E 3
 app.post('/api/generate-image', async (req, res) => {
   try {
@@ -644,6 +681,11 @@ app.post('/api/generate-image', async (req, res) => {
     const keyError = validateApiKey(apiKey);
     if (keyError) return res.status(401).json({ error: keyError });
     const openaiClient = getOpenAIClient(apiKey);
+
+    // Build the origin URL for the cached image (use this for all image caching in this request)
+    const protocol = req.protocol || 'http';
+    const host = req.get('host') || `localhost:${PORT}`;
+    const requestOrigin = `${protocol}://${host}`;
 
     const finalPrompt = imageType === 'chapter'
       ? sanitizeChapterImagePrompt(imagePrompt)
@@ -664,10 +706,17 @@ app.post('/api/generate-image', async (req, res) => {
         throw new Error('No image URL returned from DALL-E 3');
       }
 
-      const imageUrl = response.data[0].url;
+      const tempImageUrl = response.data[0].url;
 
-      console.log(`[Backend] Generated image URL: ${imageUrl}`);
-      return res.json({ imageUrl });
+      // Generate unique filename based on timestamp and type
+      const timestamp = Date.now();
+      const filename = `image_${imageType}_${timestamp}.png`;
+
+      // Download and cache the image
+      const cachedImageUrl = await downloadAndCacheImage(tempImageUrl, imageType, filename, requestOrigin);
+
+      console.log(`[Backend] Generated and cached image: ${cachedImageUrl}`);
+      return res.json({ imageUrl: cachedImageUrl });
     } catch (imageError: any) {
       // Check if it's a safety system rejection
       if (imageError.message && imageError.message.includes('safety system')) {
@@ -693,9 +742,17 @@ app.post('/api/generate-image', async (req, res) => {
             throw new Error('No image URL returned from DALL-E 3 on retry');
           }
 
-          const imageUrl = retryResponse.data[0].url;
-          console.log(`[Backend] Generated image with safe prompt: ${imageUrl}`);
-          return res.json({ imageUrl, usedSafePrompt: true });
+          const tempImageUrl = retryResponse.data[0].url;
+
+          // Generate unique filename based on timestamp
+          const timestamp = Date.now();
+          const filename = `image_${imageType}_safe_${timestamp}.png`;
+
+          // Download and cache the safe image (reuses requestOrigin from outer scope)
+          const cachedImageUrl = await downloadAndCacheImage(tempImageUrl, imageType, filename, requestOrigin);
+
+          console.log(`[Backend] Generated and cached safe image: ${cachedImageUrl}`);
+          return res.json({ imageUrl: cachedImageUrl, usedSafePrompt: true });
         } catch (retryError: any) {
           console.warn(`[Backend] Safe prompt also failed: ${retryError.message}`);
           // Return success but no image - UI will handle this gracefully

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useImperativeHandle, forwardRef } from 'react';
 import { API_KEYS_STORAGE_KEY, type ApiKeys } from './SettingsModal';
 
 interface Character {
@@ -32,7 +32,7 @@ interface Chapter {
 const LOCAL_STORAGE_KEY = 'storyExpanderProgress';
 const PROMPTS_STORAGE_KEY = 'storyExpanderPrompts';
 
-const StoryExpander: React.FC = () => {
+const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
   const [draft, setDraft] = useState<string>('');
   const [model, setModel] = useState<string>('gpt-5-mini');
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -63,6 +63,22 @@ const StoryExpander: React.FC = () => {
   const [coverGenerationInProgress, setCoverGenerationInProgress] = useState<boolean>(false);
   const [chapterImageLoading, setChapterImageLoading] = useState<number | null>(null);
   const [chapterImagePromptLoading, setChapterImagePromptLoading] = useState<number | null>(null);
+  const [previewChapterIndex, setPreviewChapterIndex] = useState<number | null>(null);
+  const [isPreviewingFullBook, setIsPreviewingFullBook] = useState<boolean>(false);
+
+  // Expose saveNow method via ref
+  useImperativeHandle(ref, () => ({
+    saveNow: () => {
+      saveProgress();
+      setSaveStatus('Manually saved');
+      setSaveStatusType('success');
+      if (saveStatusTimer) {
+        window.clearTimeout(saveStatusTimer);
+      }
+      const t = window.setTimeout(() => setSaveStatus(null), 3000);
+      setSaveStatusTimer(t);
+    },
+  }));
 
   // Helper function to get stored API key
   const getStoredApiKey = (): string => {
@@ -239,7 +255,7 @@ const StoryExpander: React.FC = () => {
     }
   }, [summaryPrompt, outlinePrompt, model]);
 
-  const saveProgress = () => {
+  const saveProgress = (overrideCoverImage?: string, overrideBookTitle?: string) => {
     const progress = {
       draft,
       draftHash,
@@ -254,8 +270,8 @@ const StoryExpander: React.FC = () => {
       currentStep,
       currentChapterIndex,
       model,
-      coverImage,
-      bookTitle,
+      coverImage: overrideCoverImage !== undefined ? overrideCoverImage : coverImage,
+      bookTitle: overrideBookTitle !== undefined ? overrideBookTitle : bookTitle,
     };
     localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(progress));
     // Also attempt to persist to the backend as story.json (best-effort, non-blocking)
@@ -1240,7 +1256,7 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
         if (imageData.imageUrl) {
           setCoverImage(imageData.imageUrl);
           setStatus(`Cover image generated with title: "${bookTitle}"!`);
-          saveProgress();
+          saveProgress(imageData.imageUrl, bookTitle);
         } else if (imageData.error) {
           setStatus('Cover generation skipped (content filter)');
         }
@@ -1251,6 +1267,122 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
       console.error('Failed to generate cover image:', err);
     } finally {
       setCoverGenerationInProgress(false);
+    }
+  };
+
+  const openChapterPreviewInNewTab = (idx: number) => {
+    const chapter = chapters[idx];
+    const chapterText = expandedChapters[idx];
+    if (!chapter || !chapterText) return;
+
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Chapter ${idx + 1}: ${chapter.title}</title>
+        <style>
+          body { font-family: Georgia, serif; max-width: 800px; margin: 0 auto; padding: 40px 20px; line-height: 1.8; color: #333; background: #f5f5f5; }
+          h1 { font-size: 2.5em; text-align: center; margin-bottom: 10px; }
+          .chapter-number { font-size: 1.2em; text-align: center; color: #666; margin-bottom: 30px; }
+          img { max-width: 100%; height: auto; margin: 30px 0; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+          .content { background: white; padding: 40px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+          p { text-align: justify; text-indent: 2em; margin-bottom: 1.5em; }
+          p:first-of-type { text-indent: 0; }
+          .controls { text-align: center; margin: 30px 0; }
+          button { padding: 10px 20px; margin: 5px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 1em; }
+          button:hover { background: #2563eb; }
+          @media print { body { background: white; padding: 0; } .controls { display: none; } }
+        </style>
+      </head>
+      <body>
+        <div class="controls">
+          <button onclick="window.print()">🖨️ Print</button>
+          <button onclick="window.close()">✕ Close</button>
+        </div>
+        <div class="content">
+          <div class="chapter-number">Chapter ${idx + 1}</div>
+          <h1>${chapter.title}</h1>
+          ${chapter.imageUrl ? `<img src="${chapter.imageUrl}" alt="Chapter ${idx + 1}: ${chapter.title}">` : ''}
+          ${chapterText.split('\n\n').map(para => `<p>${para}</p>`).join('')}
+        </div>
+      </body>
+      </html>
+    `;
+
+    const newWindow = window.open();
+    if (newWindow) {
+      newWindow.document.write(htmlContent);
+      newWindow.document.close();
+    }
+  };
+
+  const openFullBookPreviewInNewTab = () => {
+    const chaptersHtml = chapters.map((ch, idx) => `
+      <h2 style="page-break-before: always; font-size: 2em; margin-top: 40px; margin-bottom: 20px;">Chapter ${idx + 1}: ${ch.title}</h2>
+      ${ch.imageUrl ? `<img src="${ch.imageUrl}" alt="Chapter ${idx + 1}: ${ch.title}" style="max-width: 100%; height: auto; margin: 20px 0;">` : ''}
+      ${expandedChapters[idx].split('\n\n').map(para => `<p>${para}</p>`).join('')}
+    `).join('');
+
+    const toc = chapters.map((ch, idx) => `<li>Chapter ${idx + 1}: ${ch.title}</li>`).join('');
+
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>${bookTitle || 'Novel'}</title>
+        <style>
+          body { font-family: Georgia, serif; max-width: 900px; margin: 0 auto; padding: 40px 20px; line-height: 1.8; color: #333; background: #f5f5f5; }
+          .cover { text-align: center; padding: 60px 20px; background: white; margin-bottom: 40px; border-radius: 8px; }
+          .cover-image { max-width: 400px; height: auto; margin: 30px auto; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+          .cover h1 { font-size: 3em; margin: 20px 0; }
+          .toc { background: white; padding: 40px; margin: 40px 0; border-radius: 8px; }
+          .toc h2 { font-size: 2em; margin-bottom: 20px; }
+          .toc ul { list-style: none; padding: 0; }
+          .toc li { margin: 10px 0; font-size: 1.1em; }
+          .content { background: white; padding: 40px; border-radius: 8px; }
+          h2 { font-size: 2.2em; margin-top: 60px; margin-bottom: 20px; }
+          img { max-width: 100%; height: auto; margin: 30px 0; }
+          p { text-align: justify; text-indent: 2em; margin-bottom: 1.5em; }
+          p:first-of-type { text-indent: 0; }
+          .controls { text-align: center; margin: 30px 0; position: sticky; top: 0; background: white; padding: 15px 0; border-bottom: 1px solid #ddd; }
+          button { padding: 10px 20px; margin: 5px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 1em; }
+          button:hover { background: #2563eb; }
+          .the-end { text-align: center; font-size: 2em; margin: 60px 0; color: #666; }
+          @media print { body { background: white; padding: 0; } .controls { display: none; } }
+        </style>
+      </head>
+      <body>
+        <div class="controls">
+          <button onclick="window.print()">🖨️ Print</button>
+          <button onclick="window.close()">✕ Close</button>
+        </div>
+
+        <div class="cover">
+          ${coverImage ? `<img src="${coverImage}" alt="Book Cover" class="cover-image">` : '<div style="width: 300px; height: 400px; background: #e5e7eb; margin: 30px auto; display: flex; align-items: center; justify-content: center; color: #999;">No cover image</div>'}
+          <h1>${bookTitle || 'Novel'}</h1>
+        </div>
+
+        <div class="toc">
+          <h2>Table of Contents</h2>
+          <ul>${toc}</ul>
+        </div>
+
+        <div class="content">
+          ${chaptersHtml}
+          <div class="the-end">~ The End ~</div>
+        </div>
+      </body>
+      </html>
+    `;
+
+    const newWindow = window.open();
+    if (newWindow) {
+      newWindow.document.write(htmlContent);
+      newWindow.document.close();
     }
   };
 
@@ -1610,7 +1742,7 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
           <summary className="cursor-pointer font-medium text-blue-600 mb-4">Final Expanded Story (Book Format)</summary>
 
           {/* Action Buttons */}
-          <div className="flex gap-3 mb-4 no-print">
+          <div className="flex flex-wrap gap-3 mb-4 no-print">
             {expandedChapters.every(ch => ch) && (
               <button
                 onClick={() => {
@@ -1621,6 +1753,14 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
                 className="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700"
               >
                 {coverImage ? 'Regenerate' : 'Generate'} Cover Image
+              </button>
+            )}
+            {expandedChapters.every(ch => ch) && (
+              <button
+                onClick={() => setIsPreviewingFullBook(true)}
+                className="px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700"
+              >
+                Preview Book
               </button>
             )}
           </div>
@@ -1684,7 +1824,7 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
                         alt={`Chapter ${idx + 1}: ${ch.title}`}
                         className="w-full rounded-lg shadow-lg"
                       />
-                      <div className="mt-2 flex items-center gap-3 no-print">
+                      <div className="mt-2 flex flex-wrap items-center gap-3 no-print">
                         <button
                           onClick={() => handleRegenerateChapterImage(idx)}
                           disabled={chapterImageLoading !== null}
@@ -1698,6 +1838,12 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
                           className="px-2 py-1 text-xs border border-gray-300 rounded-md text-gray-600 hover:text-gray-800 hover:border-gray-400 disabled:opacity-50"
                         >
                           {chapterImagePromptLoading === idx ? 'Regenerating...' : 'Regen Prompt'}
+                        </button>
+                        <button
+                          onClick={() => setPreviewChapterIndex(idx)}
+                          className="px-2 py-1 text-xs border border-purple-300 rounded-md text-purple-600 hover:text-purple-800 hover:border-purple-400 hover:bg-purple-50"
+                        >
+                          Preview
                         </button>
                         {ch.imagePrompt && (
                           <p className="text-xs text-gray-500 italic">Image prompt: {ch.imagePrompt}</p>
@@ -1727,8 +1873,167 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
           </div>
         </details>
       )}
+
+      {/* Chapter Preview Modal */}
+      {previewChapterIndex !== null && chapters[previewChapterIndex] && expandedChapters[previewChapterIndex] && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 overflow-y-auto">
+          <div className="bg-white rounded-lg shadow-2xl w-full max-w-3xl my-8">
+            {/* Close Button */}
+            <div className="sticky top-0 flex justify-between items-center p-6 bg-white border-b border-gray-200 rounded-t-lg">
+              <h2 className="text-2xl font-bold text-gray-800">{chapters[previewChapterIndex].title}</h2>
+              <button
+                onClick={() => setPreviewChapterIndex(null)}
+                className="text-gray-500 hover:text-gray-700 text-2xl font-bold w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Preview Content */}
+            <div className="p-8 max-h-[70vh] overflow-y-auto">
+              {/* Chapter Image */}
+              {chapters[previewChapterIndex].imageUrl && (
+                <div className="mb-6">
+                  <img
+                    src={chapters[previewChapterIndex].imageUrl}
+                    alt={`Chapter ${previewChapterIndex + 1}: ${chapters[previewChapterIndex].title}`}
+                    className="w-full rounded-lg shadow-md"
+                  />
+                </div>
+              )}
+
+              {/* Chapter Text */}
+              <div className="prose prose-lg max-w-none leading-relaxed text-gray-800">
+                {expandedChapters[previewChapterIndex].split('\n\n').map((paragraph, pIdx) => (
+                  <p key={pIdx} className="mb-4 text-justify indent-8 leading-loose">{paragraph}</p>
+                ))}
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="sticky bottom-0 p-6 bg-gray-50 border-t border-gray-200 rounded-b-lg flex justify-end gap-3">
+              <button
+                onClick={() => openChapterPreviewInNewTab(previewChapterIndex)}
+                className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+              >
+                Open in New Tab
+              </button>
+              <button
+                onClick={() => setPreviewChapterIndex(null)}
+                className="px-6 py-2 bg-gray-600 text-white rounded-md hover:bg-gray-700"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Full Book Preview Modal */}
+      {isPreviewingFullBook && chapters.length > 0 && expandedChapters.some(ch => ch) && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 overflow-y-auto">
+          <div className="bg-white rounded-lg shadow-2xl w-full max-w-4xl my-8">
+            {/* Close Button */}
+            <div className="sticky top-0 flex justify-between items-center p-6 bg-white border-b border-gray-200 rounded-t-lg">
+              <h2 className="text-2xl font-bold text-gray-800">{bookTitle || 'Preview Book'}</h2>
+              <button
+                onClick={() => setIsPreviewingFullBook(false)}
+                className="text-gray-500 hover:text-gray-700 text-2xl font-bold w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Preview Content */}
+            <div className="p-8 max-h-[80vh] overflow-y-auto">
+              {/* Cover Page */}
+              <div className="mb-12 text-center pb-8 border-b-2 border-gray-200">
+                {coverImage ? (
+                  <div className="relative inline-block max-w-2xl mx-auto mb-6">
+                    <img
+                      src={coverImage}
+                      alt="Book Cover"
+                      className="w-full rounded-lg shadow-2xl"
+                    />
+                  </div>
+                ) : (
+                  <div className="bg-gray-200 rounded-lg w-64 h-80 mx-auto mb-6 flex items-center justify-center">
+                    <span className="text-gray-400">No cover image</span>
+                  </div>
+                )}
+                <h1 className="text-5xl font-bold text-gray-900 mb-2">{bookTitle || 'Novel'}</h1>
+              </div>
+
+              {/* Table of Contents */}
+              <div className="mb-12 pb-8 border-b-2 border-gray-200">
+                <h2 className="text-3xl font-bold text-gray-800 mb-4">Table of Contents</h2>
+                <ul className="space-y-2 text-lg text-gray-700">
+                  {chapters.map((ch, idx) => (
+                    <li key={idx} className="flex justify-between">
+                      <span>Chapter {idx + 1}: {ch.title}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              {/* All Chapters */}
+              {chapters.map((ch, idx) => (
+                <div key={idx} className="mb-12 pb-8">
+                  <h2 className="text-4xl font-bold text-gray-900 mb-4">Chapter {idx + 1}: {ch.title}</h2>
+
+                  {/* Chapter Image */}
+                  {ch.imageUrl && (
+                    <div className="mb-6">
+                      <img
+                        src={ch.imageUrl}
+                        alt={`Chapter ${idx + 1}: ${ch.title}`}
+                        className="w-full rounded-lg shadow-lg"
+                      />
+                    </div>
+                  )}
+
+                  {/* Chapter Content */}
+                  <div className="prose prose-lg max-w-none leading-relaxed text-gray-800">
+                    {expandedChapters[idx].split('\n\n').map((paragraph, pIdx) => (
+                      <p key={pIdx} className="mb-4 text-justify indent-8 leading-loose">{paragraph}</p>
+                    ))}
+                  </div>
+
+                  {idx < chapters.length - 1 && (
+                    <div className="mt-8 border-b-2 border-gray-200"></div>
+                  )}
+                </div>
+              ))}
+
+              {/* End Page */}
+              <div className="text-center py-12">
+                <p className="text-2xl font-serif text-gray-600">~ The End ~</p>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="sticky bottom-0 p-6 bg-gray-50 border-t border-gray-200 rounded-b-lg flex justify-end gap-3">
+              <button
+                onClick={() => openFullBookPreviewInNewTab()}
+                className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+              >
+                Open in New Tab
+              </button>
+              <button
+                onClick={() => setIsPreviewingFullBook(false)}
+                className="px-6 py-2 bg-gray-600 text-white rounded-md hover:bg-gray-700"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
-};
+});
+
+StoryExpander.displayName = 'StoryExpander';
 
 export default StoryExpander;
+

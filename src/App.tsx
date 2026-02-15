@@ -1,14 +1,22 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import StoryExpander from './components/StoryExpander';
 import SettingsModal from './components/SettingsModal';
 
 function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const storyExpanderRef = useRef<{ saveNow: () => void }>(null);
 
   return (
     <div className="min-h-screen bg-gray-100 py-8">
       {/* Settings & Print Buttons - Top Right */}
       <div className="fixed top-4 right-4 z-40 no-print flex gap-2">
+        <button
+          onClick={() => storyExpanderRef.current?.saveNow()}
+          className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-3 rounded-lg shadow-md transition-all hover:shadow-lg flex items-center gap-2 border border-blue-700"
+          title="Save current state"
+        >
+          <span className="text-xl">💾</span>
+        </button>
         <button
           onClick={() => window.print()}
           className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg shadow-md transition-all hover:shadow-lg flex items-center gap-2 border border-green-700"
@@ -35,7 +43,7 @@ function App() {
         <h1 className="text-3xl font-bold text-center mb-8 text-gray-800">
           Story Expander: Draft to Detailed Chapters
         </h1>
-        <StoryExpander />
+        <StoryExpander ref={storyExpanderRef} />
       </div>
     </div>
   );
