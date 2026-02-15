@@ -1859,12 +1859,12 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
                   onClick={async () => {
                     setEditingImageStyle(false);
                     saveProgress();
-                    
+
                     // Ask user if they want to regenerate images
                     const confirmed = window.confirm(
                       `Regenerate all ${chapters.length} chapter images with the updated style?\n\nThis may take several minutes.`
                     );
-                    
+
                     if (confirmed) {
                       await regenerateAllChapterImagesWithStyle();
                     }
@@ -1879,12 +1879,12 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
                     setGlobalImageStyle('Digital illustration, cinematic lighting, dramatic atmosphere, rich color palette, professional fantasy art style, detailed and atmospheric, 4K quality, painterly aesthetic with fine brushwork, moody and immersive environment, warm and cool color contrast, professional concept art');
                     setEditingImageStyle(false);
                     saveProgress();
-                    
+
                     // Ask user if they want to regenerate images
                     const confirmed = window.confirm(
                       `Regenerate all ${chapters.length} chapter images with the updated style?\n\nThis may take several minutes.`
                     );
-                    
+
                     if (confirmed) {
                       await regenerateAllChapterImagesWithStyle();
                     }
