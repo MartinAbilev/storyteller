@@ -67,6 +67,7 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
   const [isPreviewingFullBook, setIsPreviewingFullBook] = useState<boolean>(false);
   const [globalImageStyle, setGlobalImageStyle] = useState<string>('');
   const [editingImageStyle, setEditingImageStyle] = useState<boolean>(false);
+  const [hasInitializedImageStyle, setHasInitializedImageStyle] = useState<boolean>(false);
 
   // Expose saveNow method via ref
   useImperativeHandle(ref, () => ({
@@ -256,6 +257,8 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
       } else {
         setStatus('No saved progress found—start fresh with your draft.');
       }
+      // Mark that we've finished initial load
+      setHasInitializedImageStyle(true);
     };
     loadProgress();
   }, []);
@@ -273,6 +276,151 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
       console.warn('[Frontend] Failed to save prompts to localStorage', err);
     }
   }, [summaryPrompt, outlinePrompt, model, globalImageStyle]);
+
+  // Helper function to regenerate all chapter images with current global style
+  const regenerateAllChapterImagesWithStyle = async () => {
+    if (!globalImageStyle.trim() || chapters.length === 0 || expandedChapters.length === 0) {
+      return;
+    }
+
+    // Only regenerate if there are already expanded chapters with content
+    if (!expandedChapters.some(ch => ch && ch.trim())) {
+      return;
+    }
+
+    console.log('[Frontend] Regenerating chapter image prompts and images with current style...');
+
+    const openaiApiKey = getStoredApiKey();
+    let updatedChapters = [...chapters];
+    let successCount = 0;
+    let failureCount = 0;
+
+    for (let idx = 0; idx < updatedChapters.length; idx++) {
+      const chapter = updatedChapters[idx];
+      const chapterText = expandedChapters[idx];
+
+      if (!chapterText || !chapterText.trim()) {
+        continue;
+      }
+
+      try {
+        setChapterImagePromptLoading(idx);
+
+        // Regenerate image prompt with new global style
+        const imagePromptResponse = await fetch('/api/generate-image-prompt', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: chapter.title,
+            summary: chapter.summary,
+            chapterText: chapterText,
+            model,
+            apiKey: openaiApiKey,
+            globalImageStyle,
+          }),
+        });
+
+        if (!imagePromptResponse.ok) {
+          failureCount++;
+          continue;
+        }
+
+        const imagePromptData = await parseJsonResponse(imagePromptResponse, 'generate-image-prompt');
+        const newImagePrompt = imagePromptData.imagePrompt;
+
+        if (!newImagePrompt || !newImagePrompt.trim()) {
+          failureCount++;
+          continue;
+        }
+
+        // Update chapter with new image prompt
+        updatedChapters[idx] = {
+          ...updatedChapters[idx],
+          imagePrompt: newImagePrompt,
+        };
+
+        // Regenerate image with new prompt and global style
+        const imageResponse = await fetch('/api/generate-image', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            imagePrompt: newImagePrompt,
+            apiKey: openaiApiKey,
+            title: chapter.title,
+            summary: chapter.summary,
+            imageType: 'chapter',
+            globalImageStyle,
+          }),
+        });
+
+        if (!imageResponse.ok) {
+          failureCount++;
+          continue;
+        }
+
+        const imageData = await parseJsonResponse(imageResponse, 'generate-image');
+        const imageUrl = imageData.imageUrl || '';
+
+        if (!imageUrl) {
+          failureCount++;
+          continue;
+        }
+
+        updatedChapters[idx] = {
+          ...updatedChapters[idx],
+          imageUrl,
+        };
+        successCount++;
+
+        // Small delay to avoid rate limits
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      } catch (err: any) {
+        console.error(`Chapter ${idx + 1} image regeneration failed:`, err);
+        failureCount++;
+      } finally {
+        setChapterImagePromptLoading(null);
+      }
+    }
+
+    // Update state once with all changes
+    setChapters(updatedChapters);
+    setStatus(`Images updated with new style! ${successCount} chapter images regenerated${failureCount > 0 ? `, ${failureCount} failed` : ''}.`);
+
+    // Save with updated data
+    saveProgress();
+  };
+
+  // When global image style changes, ask to regenerate all chapter images
+  useEffect(() => {
+    const askAndRegenerateImages = async () => {
+      // Skip regeneration on initial mount (before loadProgress completes)
+      if (!hasInitializedImageStyle) {
+        return;
+      }
+
+      if (!globalImageStyle.trim() || chapters.length === 0 || expandedChapters.length === 0) {
+        return;
+      }
+
+      // Only regenerate if there are already expanded chapters with content
+      if (!expandedChapters.some(ch => ch && ch.trim())) {
+        return;
+      }
+
+      const confirmed = window.confirm(
+        `Regenerate all ${chapters.length} chapter images with the updated style?\n\nThis may take several minutes.`
+      );
+
+      if (!confirmed) {
+        console.log('[Frontend] User declined to regenerate chapter images with new style');
+        return;
+      }
+
+      await regenerateAllChapterImagesWithStyle();
+    };
+
+    askAndRegenerateImages();
+  }, [globalImageStyle, hasInitializedImageStyle]); // Only trigger when globalImageStyle changes (after initial load)
 
   const saveProgress = (overrideCoverImage?: string, overrideBookTitle?: string) => {
     const progress = {
@@ -1708,9 +1856,18 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
               <div className="mt-2 flex gap-2">
                 <button
                   type="button"
-                  onClick={() => {
+                  onClick={async () => {
                     setEditingImageStyle(false);
                     saveProgress();
+                    
+                    // Ask user if they want to regenerate images
+                    const confirmed = window.confirm(
+                      `Regenerate all ${chapters.length} chapter images with the updated style?\n\nThis may take several minutes.`
+                    );
+                    
+                    if (confirmed) {
+                      await regenerateAllChapterImagesWithStyle();
+                    }
                   }}
                   className="px-3 py-1 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm"
                 >
@@ -1718,10 +1875,19 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
                 </button>
                 <button
                   type="button"
-                  onClick={() => {
+                  onClick={async () => {
                     setGlobalImageStyle('Digital illustration, cinematic lighting, dramatic atmosphere, rich color palette, professional fantasy art style, detailed and atmospheric, 4K quality, painterly aesthetic with fine brushwork, moody and immersive environment, warm and cool color contrast, professional concept art');
                     setEditingImageStyle(false);
                     saveProgress();
+                    
+                    // Ask user if they want to regenerate images
+                    const confirmed = window.confirm(
+                      `Regenerate all ${chapters.length} chapter images with the updated style?\n\nThis may take several minutes.`
+                    );
+                    
+                    if (confirmed) {
+                      await regenerateAllChapterImagesWithStyle();
+                    }
                   }}
                   className="px-3 py-1 bg-gray-400 text-white rounded-md hover:bg-gray-500 text-sm"
                 >
