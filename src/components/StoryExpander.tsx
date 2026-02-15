@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useImperativeHandle, forwardRef } from 'react';
+import React, { useState, useEffect, useImperativeHandle, forwardRef, useRef } from 'react';
 import { API_KEYS_STORAGE_KEY, type ApiKeys } from './SettingsModal';
 
 interface Character {
@@ -60,6 +60,7 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
   const [regenerateFromChapterIndex, setRegenerateFromChapterIndex] = useState<number | null>(null);
   const [coverImage, setCoverImage] = useState<string>('');
   const [bookTitle, setBookTitle] = useState<string>('');
+  const [coverPrompt, setCoverPrompt] = useState<string>('');
   const [coverGenerationInProgress, setCoverGenerationInProgress] = useState<boolean>(false);
   const [chapterImageLoading, setChapterImageLoading] = useState<number | null>(null);
   const [chapterImagePromptLoading, setChapterImagePromptLoading] = useState<number | null>(null);
@@ -68,6 +69,7 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
   const [globalImageStyle, setGlobalImageStyle] = useState<string>('');
   const [editingImageStyle, setEditingImageStyle] = useState<boolean>(false);
   const [hasInitializedImageStyle, setHasInitializedImageStyle] = useState<boolean>(false);
+  const lastGlobalImageStyleRef = useRef<string>('');
 
   // Expose saveNow method via ref
   useImperativeHandle(ref, () => ({
@@ -211,6 +213,7 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
           setModel(prompts.model || (model || 'gpt-5-mini'));
           // Only set globalImageStyle if it actually exists in storage, don't use default here
           if (prompts.globalImageStyle) {
+            lastGlobalImageStyleRef.current = prompts.globalImageStyle;
             setGlobalImageStyle(prompts.globalImageStyle);
             console.log('[Frontend] loadProgress: set globalImageStyle from storage');
           } else {
@@ -245,7 +248,11 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
           setModel(progress.model || model || 'gpt-5-mini');
           setCoverImage(progress.coverImage || '');
           setBookTitle(progress.bookTitle || '');
+          if (progress.coverPrompt) {
+            setCoverPrompt(progress.coverPrompt);
+          }
           if (progress.globalImageStyle) {
+            lastGlobalImageStyleRef.current = progress.globalImageStyle;
             setGlobalImageStyle(progress.globalImageStyle);
             console.log('[Frontend] loadProgress: restored globalImageStyle from LOCAL_STORAGE_KEY');
           }
@@ -277,6 +284,90 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
     }
   }, [summaryPrompt, outlinePrompt, model, globalImageStyle]);
 
+  const buildCoverPrompt = () => {
+    const basePrompt = `Professional book cover illustration in artistic style. ${condensedDraft.substring(0, 300)}. Features: ${keyElements?.characters.slice(0, 2).map(c => c.name).join(' and ') || 'main characters'}. Mood: ${keyElements?.mainStoryLines[0] || 'epic adventure'}. Rich colors, dramatic composition, suitable for novel cover art. No text, no typography, no titles, no letters. Do not depict a physical book, book cover mockup, pages, or a photo of a book; depict the scene as standalone art.`;
+    if (globalImageStyle.trim()) {
+      return `${basePrompt} Style: ${globalImageStyle}`;
+    }
+    return basePrompt;
+  };
+
+  // Helper function to regenerate all chapter image prompts with current global style
+  const regenerateAllChapterPromptsWithStyle = async () => {
+    if (!globalImageStyle.trim() || chapters.length === 0 || expandedChapters.length === 0) {
+      return;
+    }
+
+    // Only regenerate if there are already expanded chapters with content
+    if (!expandedChapters.some(ch => ch && ch.trim())) {
+      return;
+    }
+
+    console.log('[Frontend] Regenerating chapter image prompts with current style...');
+
+    const newCoverPrompt = buildCoverPrompt();
+    setCoverPrompt(newCoverPrompt);
+
+    const openaiApiKey = getStoredApiKey();
+    let updatedChapters = [...chapters];
+    let successCount = 0;
+    let failureCount = 0;
+
+    for (let idx = 0; idx < updatedChapters.length; idx++) {
+      const chapter = updatedChapters[idx];
+      const chapterText = expandedChapters[idx];
+
+      if (!chapterText || !chapterText.trim()) {
+        continue;
+      }
+
+      try {
+        setChapterImagePromptLoading(idx);
+
+        const imagePromptResponse = await fetch('/api/generate-image-prompt', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            title: chapter.title,
+            summary: chapter.summary,
+            chapterText: chapterText,
+            model,
+            apiKey: openaiApiKey,
+            globalImageStyle,
+          }),
+        });
+
+        if (!imagePromptResponse.ok) {
+          failureCount++;
+          continue;
+        }
+
+        const imagePromptData = await parseJsonResponse(imagePromptResponse, 'generate-image-prompt');
+        const newImagePrompt = imagePromptData.imagePrompt;
+
+        if (!newImagePrompt || !newImagePrompt.trim()) {
+          failureCount++;
+          continue;
+        }
+
+        updatedChapters[idx] = {
+          ...updatedChapters[idx],
+          imagePrompt: newImagePrompt,
+        };
+        successCount++;
+      } catch (err: any) {
+        console.error(`Chapter ${idx + 1} image prompt regeneration failed:`, err);
+        failureCount++;
+      } finally {
+        setChapterImagePromptLoading(null);
+      }
+    }
+
+    setChapters(updatedChapters);
+    setStatus(`Prompts updated with new style! ${successCount} chapter prompts regenerated${failureCount > 0 ? `, ${failureCount} failed` : ''}.`);
+    saveProgress(undefined, undefined, newCoverPrompt, updatedChapters);
+  };
+
   // Helper function to regenerate all chapter images with current global style
   const regenerateAllChapterImagesWithStyle = async () => {
     if (!globalImageStyle.trim() || chapters.length === 0 || expandedChapters.length === 0) {
@@ -289,6 +380,9 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
     }
 
     console.log('[Frontend] Regenerating chapter image prompts and images with current style...');
+
+    const newCoverPrompt = buildCoverPrompt();
+    setCoverPrompt(newCoverPrompt);
 
     const openaiApiKey = getStoredApiKey();
     let updatedChapters = [...chapters];
@@ -387,7 +481,7 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
     setStatus(`Images updated with new style! ${successCount} chapter images regenerated${failureCount > 0 ? `, ${failureCount} failed` : ''}.`);
 
     // Save with updated data
-    saveProgress();
+    saveProgress(undefined, undefined, newCoverPrompt, updatedChapters);
   };
 
   // When global image style changes, ask to regenerate all chapter images
@@ -397,6 +491,13 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
       if (!hasInitializedImageStyle) {
         return;
       }
+
+      if (globalImageStyle === lastGlobalImageStyleRef.current) {
+        return;
+      }
+
+      // Mark this style as handled to avoid repeat prompts on refresh
+      lastGlobalImageStyleRef.current = globalImageStyle;
 
       if (!globalImageStyle.trim() || chapters.length === 0 || expandedChapters.length === 0) {
         return;
@@ -413,6 +514,7 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
 
       if (!confirmed) {
         console.log('[Frontend] User declined to regenerate chapter images with new style');
+        await regenerateAllChapterPromptsWithStyle();
         return;
       }
 
@@ -422,7 +524,12 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
     askAndRegenerateImages();
   }, [globalImageStyle, hasInitializedImageStyle]); // Only trigger when globalImageStyle changes (after initial load)
 
-  const saveProgress = (overrideCoverImage?: string, overrideBookTitle?: string) => {
+  const saveProgress = (
+    overrideCoverImage?: string,
+    overrideBookTitle?: string,
+    overrideCoverPrompt?: string,
+    overrideChapters?: Chapter[]
+  ) => {
     const progress = {
       draft,
       draftHash,
@@ -430,7 +537,7 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
       keyElements,
       summaryPrompt,
       outlinePrompt,
-      chapters,
+      chapters: overrideChapters !== undefined ? overrideChapters : chapters,
       expandedChapters,
       expansionCounts,
       chapterPrompts,
@@ -439,6 +546,7 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
       model,
       coverImage: overrideCoverImage !== undefined ? overrideCoverImage : coverImage,
       bookTitle: overrideBookTitle !== undefined ? overrideBookTitle : bookTitle,
+      coverPrompt: overrideCoverPrompt !== undefined ? overrideCoverPrompt : coverPrompt,
       globalImageStyle,
     };
     localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(progress));
@@ -1129,7 +1237,7 @@ All four fields must be coherent and internally consistent.` : '';
       setChapters(newChapters);
 
       setStatus(`Chapter ${chapterIndex + 1} regenerated.`);
-      saveProgress();
+      saveProgress(undefined, undefined, undefined, newChapters);
     } catch (err: any) {
       setError(`Regeneration failed: ${err.message || 'Unknown error'}. Try again.`);
       setRawError(err.rawResponse || '');
@@ -1183,7 +1291,7 @@ All four fields must be coherent and internally consistent.` : '';
       };
       setChapters(newChapters);
       setStatus(`Image regenerated for chapter ${chapterIndex + 1}.`);
-      saveProgress();
+      saveProgress(undefined, undefined, undefined, newChapters);
     } catch (err: any) {
       setError(`Image regeneration failed: ${err.message || 'Unknown error'}`);
     } finally {
@@ -1210,6 +1318,7 @@ All four fields must be coherent and internally consistent.` : '';
           chapterText: expandedChapters[chapterIndex] || '',
           model,
           apiKey: openaiApiKey,
+          globalImageStyle,
         }),
       });
 
@@ -1228,7 +1337,7 @@ All four fields must be coherent and internally consistent.` : '';
       };
       setChapters(newChapters);
       setStatus(`Image prompt regenerated for chapter ${chapterIndex + 1}.`);
-      saveProgress();
+      saveProgress(undefined, undefined, undefined, newChapters);
     } catch (err: any) {
       setError(`Image prompt regeneration failed: ${err.message || 'Unknown error'}`);
     } finally {
@@ -1485,7 +1594,8 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
       setStatus(`Generating cover image with title: "${bookTitle}"...`);
 
       // Generate cover image prompt (artistic illustration, not text)
-      const coverPromptText = `Professional book cover illustration in artistic style. ${condensedDraft.substring(0, 300)}. Features: ${keyElements?.characters.slice(0, 2).map(c => c.name).join(' and ') || 'main characters'}. Mood: ${keyElements?.mainStoryLines[0] || 'epic adventure'}. Rich colors, dramatic composition, suitable for novel cover art. No text, no typography, no titles, no letters. Do not depict a physical book, book cover mockup, pages, or a photo of a book; depict the scene as standalone art.`;
+      const coverPromptText = buildCoverPrompt();
+      setCoverPrompt(coverPromptText);
 
       const imageResponse = await fetch('/api/generate-image', {
         method: 'POST',
@@ -1505,7 +1615,7 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
         if (imageData.imageUrl) {
           setCoverImage(imageData.imageUrl);
           setStatus(`Cover image generated with title: "${bookTitle}"!`);
-          saveProgress(imageData.imageUrl, bookTitle);
+          saveProgress(imageData.imageUrl, bookTitle, coverPromptText);
         } else if (imageData.error) {
           setStatus('Cover generation skipped (content filter)');
         }
@@ -1537,6 +1647,7 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
     // Build updated chapters array locally throughout the function
     let updatedChapters = [...chapters];
     let updatedCoverImage = coverImage;
+    let updatedCoverPrompt = coverPrompt;
 
     // Regenerate cover image
     if (expandedChapters.every(ch => ch)) {
@@ -1569,7 +1680,9 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
         }
 
         // Generate cover image based on title
-        const coverPromptText = `Professional book cover illustration in artistic style. ${condensedDraft.substring(0, 300)}. Features: ${keyElements?.characters.slice(0, 2).map(c => c.name).join(' and ') || 'main characters'}. Mood: ${keyElements?.mainStoryLines[0] || 'epic adventure'}. Rich colors, dramatic composition, suitable for novel cover art. No text, no typography, no titles, no letters. Do not depict a physical book, book cover mockup, pages, or a photo of a book; depict the scene as standalone art.`;
+        const coverPromptText = buildCoverPrompt();
+        setCoverPrompt(coverPromptText);
+        updatedCoverPrompt = coverPromptText;
 
         const imageResponse = await fetch('/api/generate-image', {
           method: 'POST',
@@ -1663,7 +1776,7 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
     setStatus(`Image regeneration complete! ${successCount} chapter images regenerated${failureCount > 0 ? `, ${failureCount} failed` : ''}.`);
 
     // Save with updated data
-    saveProgress(updatedCoverImage);
+    saveProgress(updatedCoverImage, undefined, updatedCoverPrompt);
   };
 
   const openChapterPreviewInNewTab = (idx: number) => {
@@ -1867,6 +1980,8 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
 
                     if (confirmed) {
                       await regenerateAllChapterImagesWithStyle();
+                    } else {
+                      await regenerateAllChapterPromptsWithStyle();
                     }
                   }}
                   className="px-3 py-1 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm"
@@ -1887,6 +2002,8 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
 
                     if (confirmed) {
                       await regenerateAllChapterImagesWithStyle();
+                    } else {
+                      await regenerateAllChapterPromptsWithStyle();
                     }
                   }}
                   className="px-3 py-1 bg-gray-400 text-white rounded-md hover:bg-gray-500 text-sm"
