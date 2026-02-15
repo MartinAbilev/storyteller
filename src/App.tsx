@@ -7,8 +7,16 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gray-100 py-8">
-      {/* Settings Button - Top Right */}
-      <div className="fixed top-4 right-4 z-40 no-print">
+      {/* Settings & Print Buttons - Top Right */}
+      <div className="fixed top-4 right-4 z-40 no-print flex gap-2">
+        <button
+          onClick={() => window.print()}
+          className="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg shadow-md transition-all hover:shadow-lg flex items-center gap-2 border border-green-700"
+          title="Print / Export to PDF"
+        >
+          <span className="text-xl">📄</span>
+          <span className="hidden sm:inline">Print</span>
+        </button>
         <button
           onClick={() => setIsSettingsOpen(true)}
           className="bg-white hover:bg-gray-100 text-gray-700 font-bold py-2 px-4 rounded-lg shadow-md transition-all hover:shadow-lg flex items-center gap-2 border border-gray-200"

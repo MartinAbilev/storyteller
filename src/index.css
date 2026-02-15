@@ -101,6 +101,24 @@ body {
     line-height: 1.6;
   }
 
+  /* Ensure text is selectable for accessibility and TTS extensions */
+  .book-content,
+  .book-content * {
+    user-select: text;
+    -webkit-user-select: text;
+    -moz-user-select: text;
+    -ms-user-select: text;
+  }
+
+  /* Prose content should be fully selectable */
+  .prose,
+  .prose * {
+    user-select: text;
+    -webkit-user-select: text;
+    -moz-user-select: text;
+    -ms-user-select: text;
+  }
+
   /* Hide browser UI elements */
   details summary {
     display: none;
