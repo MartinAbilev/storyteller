@@ -41,6 +41,13 @@ body {
     visibility: hidden !important;
   }
 
+  /* Hide any floating UI that wasn't explicitly marked */
+  .fixed,
+  .sticky {
+    display: none !important;
+    visibility: hidden !important;
+  }
+
   .print-only {
     display: block !important;
     visibility: visible !important;

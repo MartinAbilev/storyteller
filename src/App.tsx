@@ -8,7 +8,7 @@ function App() {
   return (
     <div className="min-h-screen bg-gray-100 py-8">
       {/* Settings Button - Top Right */}
-      <div className="fixed top-4 right-4 z-40">
+      <div className="fixed top-4 right-4 z-40 no-print">
         <button
           onClick={() => setIsSettingsOpen(true)}
           className="bg-white hover:bg-gray-100 text-gray-700 font-bold py-2 px-4 rounded-lg shadow-md transition-all hover:shadow-lg flex items-center gap-2 border border-gray-200"
