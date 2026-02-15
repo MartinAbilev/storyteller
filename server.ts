@@ -80,6 +80,15 @@ const cleanJsonResponse = (text: string): string => {
     .replace(/,\s*([\]\}])/g, '$1');
 };
 
+const sanitizeChapterImagePrompt = (prompt: string): string => {
+  let cleaned = prompt;
+  cleaned = cleaned.replace(/book cover illustration/gi, 'cinematic scene illustration');
+  cleaned = cleaned.replace(/book cover/gi, 'scene illustration');
+  cleaned = cleaned.replace(/cover art/gi, 'scene illustration');
+  cleaned = cleaned.replace(/\s{2,}/g, ' ').trim();
+  return `${cleaned}. Scene-only illustration. No books, no covers, no pages, no text, no typography, no lettering.`;
+};
+
 const generateWithModel = async (prompt: string, model: string, openaiClient?: OpenAI, retries = 3, isFallback = false): Promise<string> => {
   const client = openaiClient || openai;
   console.log(`[Backend] Generating with OpenAI model "${model}" (prompt length: ${prompt.length} chars, retries left: ${retries}, fallback: ${isFallback})`);
@@ -556,6 +565,8 @@ app.post('/api/generate-image-prompt', async (req, res) => {
       The prompt should capture the key visual elements, atmosphere, and mood of the chapter.
       Make it suitable for DALL-E 3 image generation (concise but descriptive, under 400 characters).
       Focus on the most visually striking or representative scene from the chapter.
+      Avoid any depiction of books, book covers, pages, printed text, typography, or title lettering.
+      Do not describe a photo of a physical book; describe the scene itself.
 
       Chapter Title: ${title}
       Chapter Summary: ${summary}
@@ -625,7 +636,7 @@ app.post('/api/generate-book-title', async (req, res) => {
 // Generate image using DALL-E 3
 app.post('/api/generate-image', async (req, res) => {
   try {
-    const { imagePrompt, apiKey, title, summary } = req.body;
+    const { imagePrompt, apiKey, title, summary, imageType } = req.body;
     if (!imagePrompt) {
       return res.status(400).json({ error: 'Image prompt required' });
     }
@@ -634,12 +645,16 @@ app.post('/api/generate-image', async (req, res) => {
     if (keyError) return res.status(401).json({ error: keyError });
     const openaiClient = getOpenAIClient(apiKey);
 
-    console.log(`[Backend] Generating image with DALL-E 3: ${imagePrompt.substring(0, 100)}...`);
+    const finalPrompt = imageType === 'chapter'
+      ? sanitizeChapterImagePrompt(imagePrompt)
+      : imagePrompt;
+
+    console.log(`[Backend] Generating image with DALL-E 3: ${finalPrompt.substring(0, 100)}...`);
 
     try {
       const response = await openaiClient.images.generate({
         model: 'dall-e-3',
-        prompt: imagePrompt,
+        prompt: finalPrompt,
         n: 1,
         size: '1024x1024',
         quality: 'standard',
@@ -659,7 +674,9 @@ app.post('/api/generate-image', async (req, res) => {
         console.log(`[Backend] Image rejected by safety system, attempting with sanitized prompt...`);
 
         // Generate a more generic, safe prompt
-        const safePrompt = `A book cover illustration for a chapter titled "${title || 'Story Chapter'}". Professional, artistic style, appropriate for general audiences. Focus on mood and atmosphere rather than specific content.`;
+        const safePrompt = imageType === 'chapter'
+          ? 'A cinematic illustration of a key scene from the story. Professional, artistic style, appropriate for general audiences. No books, no covers, no pages, no text or typography.'
+          : `A book cover illustration for a chapter titled "${title || 'Story Chapter'}". Professional, artistic style, appropriate for general audiences. Focus on mood and atmosphere rather than specific content.`;
 
         console.log(`[Backend] Retry with safe prompt: ${safePrompt}`);
 

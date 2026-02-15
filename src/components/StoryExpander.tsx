@@ -60,6 +60,9 @@ const StoryExpander: React.FC = () => {
   const [regenerateFromChapterIndex, setRegenerateFromChapterIndex] = useState<number | null>(null);
   const [coverImage, setCoverImage] = useState<string>('');
   const [bookTitle, setBookTitle] = useState<string>('');
+  const [coverGenerationInProgress, setCoverGenerationInProgress] = useState<boolean>(false);
+  const [chapterImageLoading, setChapterImageLoading] = useState<number | null>(null);
+  const [chapterImagePromptLoading, setChapterImagePromptLoading] = useState<number | null>(null);
 
   // Helper function to get stored API key
   const getStoredApiKey = (): string => {
@@ -840,6 +843,7 @@ All four fields must be coherent and internally consistent.` : '';
             apiKey: openaiApiKey,
             title: chapter.title,
             summary: chapter.summary,
+            imageType: 'chapter',
           }),
         });
 
@@ -868,6 +872,103 @@ All four fields must be coherent and internally consistent.` : '';
       setRawError(err.rawResponse || '');
     } finally {
       setChapterLoading(null);
+    }
+  };
+
+  const handleRegenerateChapterImage = async (chapterIndex: number) => {
+    if (chapterImageLoading !== null) return;
+    setChapterImageLoading(chapterIndex);
+    setError('');
+    setRawError('');
+    try {
+      const chapter = chapters[chapterIndex];
+      const existingPrompt = chapter.imagePrompt || '';
+      if (!existingPrompt.trim()) {
+        throw new Error('No existing image prompt. Use "Regen Prompt" first.');
+      }
+      const openaiApiKey = getStoredApiKey();
+      setStatus(`Regenerating image for chapter ${chapterIndex + 1}...`);
+
+      const imageResponse = await fetch('/api/generate-image', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          imagePrompt: existingPrompt,
+          apiKey: openaiApiKey,
+          title: chapter.title,
+          summary: chapter.summary,
+          imageType: 'chapter',
+        }),
+      });
+
+      if (!imageResponse.ok) {
+        const errData = await parseJsonResponse(imageResponse, 'generate-image error');
+        throw new Error(errData.error || 'Failed to regenerate image');
+      }
+
+      const imageData = await parseJsonResponse(imageResponse, 'generate-image');
+      const imageUrl = imageData.imageUrl || '';
+      if (!imageUrl && imageData.error) {
+        throw new Error(imageData.error);
+      }
+
+      const newChapters = [...chapters];
+      newChapters[chapterIndex] = {
+        ...newChapters[chapterIndex],
+        imageUrl,
+      };
+      setChapters(newChapters);
+      setStatus(`Image regenerated for chapter ${chapterIndex + 1}.`);
+      saveProgress();
+    } catch (err: any) {
+      setError(`Image regeneration failed: ${err.message || 'Unknown error'}`);
+    } finally {
+      setChapterImageLoading(null);
+    }
+  };
+
+  const handleRegenerateChapterImagePrompt = async (chapterIndex: number) => {
+    if (chapterImagePromptLoading !== null) return;
+    setChapterImagePromptLoading(chapterIndex);
+    setError('');
+    setRawError('');
+    try {
+      const chapter = chapters[chapterIndex];
+      const openaiApiKey = getStoredApiKey();
+      setStatus(`Regenerating image prompt for chapter ${chapterIndex + 1}...`);
+
+      const imagePromptResponse = await fetch('/api/generate-image-prompt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: chapter.title,
+          summary: chapter.summary,
+          chapterText: expandedChapters[chapterIndex] || '',
+          model,
+          apiKey: openaiApiKey,
+        }),
+      });
+
+      if (!imagePromptResponse.ok) {
+        const errData = await parseJsonResponse(imagePromptResponse, 'generate-image-prompt error');
+        throw new Error(errData.error || 'Failed to regenerate image prompt');
+      }
+
+      const imagePromptData = await parseJsonResponse(imagePromptResponse, 'generate-image-prompt');
+      const imagePrompt = imagePromptData.imagePrompt || '';
+
+      const newChapters = [...chapters];
+      newChapters[chapterIndex] = {
+        ...newChapters[chapterIndex],
+        imagePrompt,
+      };
+      setChapters(newChapters);
+      setStatus(`Image prompt regenerated for chapter ${chapterIndex + 1}.`);
+      saveProgress();
+    } catch (err: any) {
+      setError(`Image prompt regeneration failed: ${err.message || 'Unknown error'}`);
+    } finally {
+      setChapterImagePromptLoading(null);
     }
   };
 
@@ -1077,17 +1178,22 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
     if (chapters.length > 0 &&
         expandedChapters.every(ch => ch) &&
         !coverImage &&
+        !coverGenerationInProgress &&
         currentStep === 3 &&
         currentChapterIndex >= chapters.length) {
       generateCoverImage();
     }
-  }, [chapters.length, expandedChapters, coverImage, currentStep, currentChapterIndex]);
+  }, [chapters.length, expandedChapters, coverImage, coverGenerationInProgress, currentStep, currentChapterIndex]);
 
   // Generate cover image when all chapters are complete
-  const generateCoverImage = async () => {
+  const generateCoverImage = async (force = false) => {
+    if (coverGenerationInProgress && !force) return;
     if (!chapters.length || !expandedChapters.every(ch => ch)) return;
 
     try {
+      if (!coverGenerationInProgress) {
+        setCoverGenerationInProgress(true);
+      }
       const openaiApiKey = getStoredApiKey();
       setStatus('Generating book title and cover image...');
 
@@ -1115,7 +1221,7 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
       setStatus(`Generating cover image with title: "${bookTitle}"...`);
 
       // Generate cover image prompt (artistic illustration, not text)
-      const coverPromptText = `Professional book cover illustration in artistic style. ${condensedDraft.substring(0, 300)}. Features: ${keyElements?.characters.slice(0, 2).map(c => c.name).join(' and ') || 'main characters'}. Mood: ${keyElements?.mainStoryLines[0] || 'epic adventure'}. Rich colors, dramatic composition, suitable for novel cover art. No text or titles.`;
+      const coverPromptText = `Professional book cover illustration in artistic style. ${condensedDraft.substring(0, 300)}. Features: ${keyElements?.characters.slice(0, 2).map(c => c.name).join(' and ') || 'main characters'}. Mood: ${keyElements?.mainStoryLines[0] || 'epic adventure'}. Rich colors, dramatic composition, suitable for novel cover art. No text, no typography, no titles, no letters. Do not depict a physical book, book cover mockup, pages, or a photo of a book; depict the scene as standalone art.`;
 
       const imageResponse = await fetch('/api/generate-image', {
         method: 'POST',
@@ -1125,6 +1231,7 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
           apiKey: openaiApiKey,
           title: bookTitle,
           summary: `Book cover for: ${bookTitle}`,
+          imageType: 'cover',
         }),
       });
 
@@ -1142,6 +1249,8 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
       }
     } catch (err) {
       console.error('Failed to generate cover image:', err);
+    } finally {
+      setCoverGenerationInProgress(false);
     }
   };
 
@@ -1465,9 +1574,25 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
                         alt={`Illustration for ${chapter.title}`}
                         className="w-full max-w-2xl rounded-lg shadow-md"
                       />
-                      {chapter.imagePrompt && (
-                        <p className="text-xs text-gray-500 italic mt-2">Image prompt: {chapter.imagePrompt}</p>
-                      )}
+                      <div className="mt-2 flex items-center gap-3">
+                        <button
+                          onClick={() => handleRegenerateChapterImage(idx)}
+                          disabled={chapterImageLoading !== null}
+                          className="px-3 py-1 bg-sky-600 text-white rounded-md hover:bg-sky-700 disabled:opacity-50"
+                        >
+                          {chapterImageLoading === idx ? 'Regenerating...' : 'Regenerate Image'}
+                        </button>
+                        <button
+                          onClick={() => handleRegenerateChapterImagePrompt(idx)}
+                          disabled={chapterImagePromptLoading !== null}
+                          className="px-2 py-1 text-xs border border-gray-300 rounded-md text-gray-600 hover:text-gray-800 hover:border-gray-400 disabled:opacity-50"
+                        >
+                          {chapterImagePromptLoading === idx ? 'Regenerating...' : 'Regen Prompt'}
+                        </button>
+                        {chapter.imagePrompt && (
+                          <p className="text-xs text-gray-500 italic">Image prompt: {chapter.imagePrompt}</p>
+                        )}
+                      </div>
                     </div>
                   )}
                   <div className="prose max-w-none text-gray-700">
@@ -1489,8 +1614,9 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
             {expandedChapters.every(ch => ch) && (
               <button
                 onClick={() => {
+                  setCoverGenerationInProgress(true);
                   setCoverImage('');
-                  setTimeout(generateCoverImage, 100);
+                  setTimeout(() => generateCoverImage(true), 100);
                 }}
                 className="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700"
               >
@@ -1566,6 +1692,25 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
                         alt={`Chapter ${idx + 1}: ${ch.title}`}
                         className="w-full rounded-lg shadow-lg"
                       />
+                      <div className="mt-2 flex items-center gap-3 no-print">
+                        <button
+                          onClick={() => handleRegenerateChapterImage(idx)}
+                          disabled={chapterImageLoading !== null}
+                          className="px-3 py-1 bg-sky-600 text-white rounded-md hover:bg-sky-700 disabled:opacity-50"
+                        >
+                          {chapterImageLoading === idx ? 'Regenerating...' : 'Regenerate Image'}
+                        </button>
+                        <button
+                          onClick={() => handleRegenerateChapterImagePrompt(idx)}
+                          disabled={chapterImagePromptLoading !== null}
+                          className="px-2 py-1 text-xs border border-gray-300 rounded-md text-gray-600 hover:text-gray-800 hover:border-gray-400 disabled:opacity-50"
+                        >
+                          {chapterImagePromptLoading === idx ? 'Regenerating...' : 'Regen Prompt'}
+                        </button>
+                        {ch.imagePrompt && (
+                          <p className="text-xs text-gray-500 italic">Image prompt: {ch.imagePrompt}</p>
+                        )}
+                      </div>
                     </div>
                   )}
 
