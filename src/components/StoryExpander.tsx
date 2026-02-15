@@ -70,6 +70,7 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
   const [editingImageStyle, setEditingImageStyle] = useState<boolean>(false);
   const [hasInitializedImageStyle, setHasInitializedImageStyle] = useState<boolean>(false);
   const lastGlobalImageStyleRef = useRef<string>('');
+  const pendingStyleChangeRef = useRef<boolean>(false);
 
   // Expose saveNow method via ref
   useImperativeHandle(ref, () => ({
@@ -492,6 +493,19 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
         return;
       }
 
+      // Only run when the user explicitly saved or refreshed the style
+      if (!pendingStyleChangeRef.current) {
+        return;
+      }
+
+      // Consume the pending change so we only prompt once per save/refresh
+      pendingStyleChangeRef.current = false;
+
+      // Don't prompt while the user is typing in the style editor
+      if (editingImageStyle) {
+        return;
+      }
+
       if (globalImageStyle === lastGlobalImageStyleRef.current) {
         return;
       }
@@ -522,7 +536,7 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
     };
 
     askAndRegenerateImages();
-  }, [globalImageStyle, hasInitializedImageStyle]); // Only trigger when globalImageStyle changes (after initial load)
+  }, [globalImageStyle, hasInitializedImageStyle, editingImageStyle]); // Trigger when style changes or editor closes
 
   const saveProgress = (
     overrideCoverImage?: string,
@@ -1068,6 +1082,7 @@ All four fields must be coherent and internally consistent.` : '';
       if (styleResponse.ok) {
         const styleData = await parseJsonResponse(styleResponse, 'generate-image-style');
         if (styleData.imageStyle) {
+          pendingStyleChangeRef.current = true;
           setGlobalImageStyle(styleData.imageStyle);
           setStatus('Image style refreshed!');
           console.log('[Frontend] Refreshed image style:', styleData.imageStyle);
@@ -1969,20 +1984,10 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
               <div className="mt-2 flex gap-2">
                 <button
                   type="button"
-                  onClick={async () => {
+                  onClick={() => {
+                    pendingStyleChangeRef.current = true;
                     setEditingImageStyle(false);
                     saveProgress();
-
-                    // Ask user if they want to regenerate images
-                    const confirmed = window.confirm(
-                      `Regenerate all ${chapters.length} chapter images with the updated style?\n\nThis may take several minutes.`
-                    );
-
-                    if (confirmed) {
-                      await regenerateAllChapterImagesWithStyle();
-                    } else {
-                      await regenerateAllChapterPromptsWithStyle();
-                    }
                   }}
                   className="px-3 py-1 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm"
                 >
@@ -1990,21 +1995,11 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
                 </button>
                 <button
                   type="button"
-                  onClick={async () => {
+                  onClick={() => {
+                    pendingStyleChangeRef.current = true;
                     setGlobalImageStyle('Digital illustration, cinematic lighting, dramatic atmosphere, rich color palette, professional fantasy art style, detailed and atmospheric, 4K quality, painterly aesthetic with fine brushwork, moody and immersive environment, warm and cool color contrast, professional concept art');
                     setEditingImageStyle(false);
                     saveProgress();
-
-                    // Ask user if they want to regenerate images
-                    const confirmed = window.confirm(
-                      `Regenerate all ${chapters.length} chapter images with the updated style?\n\nThis may take several minutes.`
-                    );
-
-                    if (confirmed) {
-                      await regenerateAllChapterImagesWithStyle();
-                    } else {
-                      await regenerateAllChapterPromptsWithStyle();
-                    }
                   }}
                   className="px-3 py-1 bg-gray-400 text-white rounded-md hover:bg-gray-500 text-sm"
                 >

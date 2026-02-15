@@ -597,9 +597,25 @@ app.post('/api/generate-image-prompt', async (req, res) => {
     `;
 
     const imagePrompt = await generateWithModel(promptText, model, openaiClient);
-    console.log(`[Backend] Generated image prompt for "${title}": ${imagePrompt.substring(0, 150)}...`);
+    let finalPrompt = imagePrompt.trim();
 
-    return res.json({ imagePrompt: imagePrompt.trim() });
+    if (globalImageStyle && globalImageStyle.trim()) {
+      const styleSuffix = ` Style: ${globalImageStyle.trim()}`;
+      const lowerPrompt = finalPrompt.toLowerCase();
+      const lowerStyle = globalImageStyle.trim().toLowerCase();
+
+      if (!lowerPrompt.includes(lowerStyle)) {
+        if (finalPrompt.length + styleSuffix.length > 300) {
+          const maxBaseLength = Math.max(1, 300 - styleSuffix.length);
+          finalPrompt = finalPrompt.slice(0, maxBaseLength).trim();
+        }
+        finalPrompt = `${finalPrompt}${styleSuffix}`;
+      }
+    }
+
+    console.log(`[Backend] Generated image prompt for "${title}": ${finalPrompt.substring(0, 150)}...`);
+
+    return res.json({ imagePrompt: finalPrompt });
   } catch (error: any) {
     console.error(`[Backend] Image prompt generation error: ${error.message || error}`);
     try {
