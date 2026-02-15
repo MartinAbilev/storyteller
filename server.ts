@@ -83,13 +83,25 @@ const cleanJsonResponse = (text: string): string => {
     .replace(/,\s*([\]\}])/g, '$1');
 };
 
-const sanitizeChapterImagePrompt = (prompt: string): string => {
+// Global image style for consistency across all generated images
+const GLOBAL_IMAGE_STYLE = `Digital illustration, cinematic lighting, dramatic atmosphere, rich color palette, professional fantasy art style, detailed and atmospheric, 4K quality, painterly aesthetic with fine brushwork, moody and immersive environment, warm and cool color contrast, professional concept art`;
+
+const sanitizeChapterImagePrompt = (prompt: string, globalStyle?: string): string => {
   let cleaned = prompt;
-  cleaned = cleaned.replace(/book cover illustration/gi, 'cinematic scene illustration');
-  cleaned = cleaned.replace(/book cover/gi, 'scene illustration');
-  cleaned = cleaned.replace(/cover art/gi, 'scene illustration');
+  // Only remove specific book-related terms, preserve scene description
+  cleaned = cleaned.replace(/book cover illustration/gi, 'cinematic scene');
+  cleaned = cleaned.replace(/book cover/gi, 'scene');
+  cleaned = cleaned.replace(/cover art/gi, 'scene art');
   cleaned = cleaned.replace(/\s{2,}/g, ' ').trim();
-  return `${cleaned}. Scene-only illustration. No books, no covers, no pages, no text, no typography, no lettering.`;
+
+  // Check if style is already in the prompt
+  if (!cleaned.toLowerCase().includes('style:')) {
+    const styleToUse = globalStyle || GLOBAL_IMAGE_STYLE;
+    cleaned = `${cleaned}. Style: ${styleToUse}`;
+  }
+
+  cleaned = `${cleaned}. Critical: No books, no covers, no pages, no text, no typography, no lettering, no printed materials.`;
+  return cleaned;
 };
 
 const generateWithModel = async (prompt: string, model: string, openaiClient?: OpenAI, retries = 3, isFallback = false): Promise<string> => {
@@ -554,7 +566,7 @@ app.post('/api/expand-chapter-more', async (req, res) => {
 // Generate image prompt for a chapter
 app.post('/api/generate-image-prompt', async (req, res) => {
   try {
-    const { title, summary, chapterText, model, apiKey } = req.body;
+    const { title, summary, chapterText, model, apiKey, globalImageStyle } = req.body;
     if (!title || !summary) {
       return res.status(400).json({ error: 'Chapter title and summary required' });
     }
@@ -563,29 +575,81 @@ app.post('/api/generate-image-prompt', async (req, res) => {
     if (keyError) return res.status(401).json({ error: keyError });
     const openaiClient = getOpenAIClient(apiKey);
 
+    const imageStyle = globalImageStyle || GLOBAL_IMAGE_STYLE;
+
     const promptText = `
-      Generate a detailed, vivid image generation prompt for this chapter.
-      The prompt should capture the key visual elements, atmosphere, and mood of the chapter.
-      Make it suitable for DALL-E 3 image generation (concise but descriptive, under 400 characters).
-      Focus on the most visually striking or representative scene from the chapter.
-      Avoid any depiction of books, book covers, pages, printed text, typography, or title lettering.
-      Do not describe a photo of a physical book; describe the scene itself.
+      Generate a focused, vivid image generation prompt for this chapter scene.
+
+      CRITICAL INSTRUCTIONS:
+      1. Extract 2-3 KEY VISUAL ELEMENTS from the chapter (specific objects, characters, locations, actions)
+      2. Describe these elements in detail (colors, materials, positions, relationships)
+      3. Include CLEAR DOMINANT ACTION or emotional moment
+      4. Keep prompt under 300 characters
+      5. Include this artistic style: "${imageStyle}"
+      6. NO text, no books, no pages, no typography, no letters in the image
+      7. Focus on what ACTUALLY HAPPENS in the chapter
 
       Chapter Title: ${title}
       Chapter Summary: ${summary}
-      ${chapterText ? `Chapter Content Preview: ${chapterText.substring(0, 1000)}...` : ''}
+      ${chapterText ? `Key Excerpt: ${chapterText.substring(0, 800)}...` : ''}
 
-      Return ONLY the image prompt text, nothing else.
+      OUTPUT ONLY the image prompt text, nothing else. Make it specific and unmistakable. Focus on depicting the exact scene, not abstract concepts.
     `;
 
     const imagePrompt = await generateWithModel(promptText, model, openaiClient);
-    console.log(`[Backend] Generated image prompt for "${title}": ${imagePrompt.substring(0, 100)}...`);
+    console.log(`[Backend] Generated image prompt for "${title}": ${imagePrompt.substring(0, 150)}...`);
 
     return res.json({ imagePrompt: imagePrompt.trim() });
   } catch (error: any) {
     console.error(`[Backend] Image prompt generation error: ${error.message || error}`);
     try {
       return res.status(500).json({ error: `Image prompt generation failed: ${error.message || 'Unknown error'}` });
+    } catch (sendError) {
+      console.error(`[Backend] Failed to send error response: ${sendError}`);
+      if (!res.headersSent) {
+        return res.status(500).json({ error: 'Internal server error' });
+      }
+    }
+  }
+});
+
+// Generate custom image style based on story draft
+app.post('/api/generate-image-style', async (req, res) => {
+  try {
+    const { draft, model, apiKey } = req.body;
+    if (!draft) {
+      return res.status(400).json({ error: 'Draft required' });
+    }
+
+    const keyError = validateApiKey(apiKey);
+    if (keyError) return res.status(401).json({ error: keyError });
+    const openaiClient = getOpenAIClient(apiKey);
+
+    const stylePrompt = `
+      Analyze this story draft and generate a custom artistic style description for image generation.
+      The style should reflect the genre, tone, and visual aesthetic of the story.
+
+      IMPORTANT INSTRUCTIONS:
+      1. Identify the story's genre, setting, and atmosphere (e.g., fantasy, sci-fi, horror, historical, summer legend, post-apocalyptic, etc.)
+      2. If the story is inspired by existing works or universes (like Warhammer), mention the relevant style influences
+      3. Create a detailed art style that matches the story's tone and aesthetic
+      4. Keep it to 150-200 characters
+      5. Focus on visual elements: lighting, colors, mood, artistic movement/style
+      6. Return ONLY the style description, nothing else
+
+      Story Draft (excerpt): ${draft.substring(0, 2000)}
+
+      Generate a custom image style for this story. Focus on what visual approach would best capture its essence.
+    `;
+
+    const imageStyle = await generateWithModel(stylePrompt, model, openaiClient);
+    console.log(`[Backend] Generated image style: ${imageStyle.substring(0, 150)}...`);
+
+    return res.json({ imageStyle: imageStyle.trim() });
+  } catch (error: any) {
+    console.error(`[Backend] Image style generation error: ${error.message || error}`);
+    try {
+      return res.status(500).json({ error: `Image style generation failed: ${error.message || 'Unknown error'}` });
     } catch (sendError) {
       console.error(`[Backend] Failed to send error response: ${sendError}`);
       if (!res.headersSent) {
@@ -673,7 +737,7 @@ const downloadAndCacheImage = async (tempImageUrl: string, imageType: string, fi
 // Generate image using DALL-E 3
 app.post('/api/generate-image', async (req, res) => {
   try {
-    const { imagePrompt, apiKey, title, summary, imageType } = req.body;
+    const { imagePrompt, apiKey, title, summary, imageType, globalImageStyle } = req.body;
     if (!imagePrompt) {
       return res.status(400).json({ error: 'Image prompt required' });
     }
@@ -687,11 +751,17 @@ app.post('/api/generate-image', async (req, res) => {
     const host = req.get('host') || `localhost:${PORT}`;
     const requestOrigin = `${protocol}://${host}`;
 
-    const finalPrompt = imageType === 'chapter'
-      ? sanitizeChapterImagePrompt(imagePrompt)
+    let finalPrompt = imageType === 'chapter'
+      ? sanitizeChapterImagePrompt(imagePrompt, globalImageStyle)
       : imagePrompt;
 
-    console.log(`[Backend] Generating image with DALL-E 3: ${finalPrompt.substring(0, 100)}...`);
+    // For cover images, ensure style is included
+    if (imageType === 'cover' && !finalPrompt.toLowerCase().includes('style:')) {
+      const imageStyle = globalImageStyle || GLOBAL_IMAGE_STYLE;
+      finalPrompt = `${finalPrompt}. Style: ${imageStyle}`;
+    }
+
+    console.log(`[Backend] Generating image with DALL-E 3 (${imageType}): ${finalPrompt.substring(0, 120)}...`);
 
     try {
       const response = await openaiClient.images.generate({
@@ -723,9 +793,10 @@ app.post('/api/generate-image', async (req, res) => {
         console.log(`[Backend] Image rejected by safety system, attempting with sanitized prompt...`);
 
         // Generate a more generic, safe prompt
+        const imageStyle = globalImageStyle || GLOBAL_IMAGE_STYLE;
         const safePrompt = imageType === 'chapter'
-          ? 'A cinematic illustration of a key scene from the story. Professional, artistic style, appropriate for general audiences. No books, no covers, no pages, no text or typography.'
-          : `A book cover illustration for a chapter titled "${title || 'Story Chapter'}". Professional, artistic style, appropriate for general audiences. Focus on mood and atmosphere rather than specific content.`;
+          ? `A cinematic illustration of a key scene from the story. Professional, artistic style, appropriate for general audiences. Style: ${imageStyle}. No books, no covers, no pages, no text or typography.`
+          : `A book cover illustration. Professional, artistic style, appropriate for general audiences. Focus on mood and atmosphere rather than specific content. Style: ${imageStyle}. No books, no covers, no pages, no text or typography.`;
 
         console.log(`[Backend] Retry with safe prompt: ${safePrompt}`);
 

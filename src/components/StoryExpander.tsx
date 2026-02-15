@@ -65,6 +65,8 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
   const [chapterImagePromptLoading, setChapterImagePromptLoading] = useState<number | null>(null);
   const [previewChapterIndex, setPreviewChapterIndex] = useState<number | null>(null);
   const [isPreviewingFullBook, setIsPreviewingFullBook] = useState<boolean>(false);
+  const [globalImageStyle, setGlobalImageStyle] = useState<string>('');
+  const [editingImageStyle, setEditingImageStyle] = useState<boolean>(false);
 
   // Expose saveNow method via ref
   useImperativeHandle(ref, () => ({
@@ -199,11 +201,20 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
       // Load saved prompts first so they persist across refresh even without a draft
       try {
         const promptsRaw = localStorage.getItem(PROMPTS_STORAGE_KEY);
+        console.log('[Frontend] loadProgress: promptsRaw =', promptsRaw?.substring(0, 100));
         if (promptsRaw) {
           const prompts = JSON.parse(promptsRaw);
+          console.log('[Frontend] loadProgress: parsed prompts.globalImageStyle =', prompts.globalImageStyle?.substring(0, 100));
           setSummaryPrompt(prompts.summaryPrompt || '');
           setOutlinePrompt(prompts.outlinePrompt || '');
           setModel(prompts.model || (model || 'gpt-5-mini'));
+          // Only set globalImageStyle if it actually exists in storage, don't use default here
+          if (prompts.globalImageStyle) {
+            setGlobalImageStyle(prompts.globalImageStyle);
+            console.log('[Frontend] loadProgress: set globalImageStyle from storage');
+          } else {
+            console.log('[Frontend] loadProgress: globalImageStyle was empty in storage');
+          }
         }
       } catch (err) {
         console.warn('[Frontend] loadProgress: failed to load prompts', err);
@@ -233,6 +244,10 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
           setModel(progress.model || model || 'gpt-5-mini');
           setCoverImage(progress.coverImage || '');
           setBookTitle(progress.bookTitle || '');
+          if (progress.globalImageStyle) {
+            setGlobalImageStyle(progress.globalImageStyle);
+            console.log('[Frontend] loadProgress: restored globalImageStyle from LOCAL_STORAGE_KEY');
+          }
           setStatus('Loaded saved progress—draft and prompts restored.');
         } catch (err) {
           console.warn('[Frontend] loadProgress: failed to parse stored progress', err);
@@ -248,12 +263,16 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
   // Persist summary/outline prompts (and model) separately so prompts survive Vite refreshes
   useEffect(() => {
     try {
-      const toSave = { summaryPrompt, outlinePrompt, model };
+      const toSave: any = { summaryPrompt, outlinePrompt, model };
+      // Only save globalImageStyle if it's not empty, to avoid overwriting good values with empty strings on initial mount
+      if (globalImageStyle.trim()) {
+        toSave.globalImageStyle = globalImageStyle;
+      }
       localStorage.setItem(PROMPTS_STORAGE_KEY, JSON.stringify(toSave));
     } catch (err) {
       console.warn('[Frontend] Failed to save prompts to localStorage', err);
     }
-  }, [summaryPrompt, outlinePrompt, model]);
+  }, [summaryPrompt, outlinePrompt, model, globalImageStyle]);
 
   const saveProgress = (overrideCoverImage?: string, overrideBookTitle?: string) => {
     const progress = {
@@ -272,6 +291,7 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
       model,
       coverImage: overrideCoverImage !== undefined ? overrideCoverImage : coverImage,
       bookTitle: overrideBookTitle !== undefined ? overrideBookTitle : bookTitle,
+      globalImageStyle,
     };
     localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(progress));
     // Also attempt to persist to the backend as story.json (best-effort, non-blocking)
@@ -653,6 +673,7 @@ All four fields must be coherent and internally consistent.` : '';
             chapterText: data.details,
             model,
             apiKey: openaiApiKey,
+            globalImageStyle,
           }),
         });
 
@@ -673,6 +694,8 @@ All four fields must be coherent and internally consistent.` : '';
               apiKey: openaiApiKey,
               title: chapter.title,
               summary: chapter.summary,
+              imageType: 'chapter',
+              globalImageStyle,
             }),
           });
 
@@ -724,7 +747,35 @@ All four fields must be coherent and internally consistent.` : '';
     }
     const newHash = await hashDraft(draft);
     setDraftHash(newHash);
+
+    // Generate custom image style from draft if starting fresh
     if (currentStep === 0 && !condensedDraft) {
+      setStatus('Analyzing draft to generate custom image style...');
+      try {
+        const openaiApiKey = getStoredApiKey();
+        const styleResponse = await fetch('/api/generate-image-style', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            draft: draft.substring(0, 2000),
+            model,
+            apiKey: openaiApiKey,
+          }),
+        });
+
+        if (styleResponse.ok) {
+          const styleData = await parseJsonResponse(styleResponse, 'generate-image-style');
+          if (styleData.imageStyle) {
+            setGlobalImageStyle(styleData.imageStyle);
+            console.log('[Frontend] Generated custom image style:', styleData.imageStyle);
+          }
+        } else {
+          console.warn('Failed to generate custom image style, using default');
+        }
+      } catch (err) {
+        console.warn('Error generating image style:', err);
+      }
+
       setStatus('Starting fresh: Summarizing draft...');
       processStep();
     } else {
@@ -736,6 +787,52 @@ All four fields must be coherent and internally consistent.` : '';
   const handleContinue = () => {
     if (isLoading) return;
     processStep();
+  };
+
+  const handleRefreshImageStyle = async () => {
+    if (!draft.trim()) {
+      setError('Please paste a draft first.');
+      return;
+    }
+
+    setStatus('Refreshing image style from draft...');
+    setError('');
+    try {
+      const openaiApiKey = getStoredApiKey();
+      const styleResponse = await fetch('/api/generate-image-style', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          draft: draft.substring(0, 2000),
+          model,
+          apiKey: openaiApiKey,
+        }),
+      });
+
+      if (styleResponse.ok) {
+        const styleData = await parseJsonResponse(styleResponse, 'generate-image-style');
+        if (styleData.imageStyle) {
+          setGlobalImageStyle(styleData.imageStyle);
+          setStatus('Image style refreshed!');
+          console.log('[Frontend] Refreshed image style:', styleData.imageStyle);
+          // Directly save the refreshed style to localStorage to avoid async state issues
+          try {
+            const promptsRaw = localStorage.getItem(PROMPTS_STORAGE_KEY) || '{}';
+            const prompts = JSON.parse(promptsRaw);
+            prompts.globalImageStyle = styleData.imageStyle;
+            localStorage.setItem(PROMPTS_STORAGE_KEY, JSON.stringify(prompts));
+            console.log('[Frontend] Saved refreshed style to PROMPTS_STORAGE_KEY');
+          } catch (e) {
+            console.warn('[Frontend] Failed to save refreshed style:', e);
+          }
+        }
+      } else {
+        setError('Failed to refresh image style');
+      }
+    } catch (err) {
+      setError(`Error refreshing image style: ${err}`);
+      console.warn('Error refreshing image style:', err);
+    }
   };
 
   const handleExpandMore = async (chapterIndex: number) => {
@@ -841,6 +938,7 @@ All four fields must be coherent and internally consistent.` : '';
           chapterText: data.details,
           model,
           apiKey: openaiApiKey,
+          globalImageStyle,
         }),
       });
 
@@ -860,6 +958,7 @@ All four fields must be coherent and internally consistent.` : '';
             title: chapter.title,
             summary: chapter.summary,
             imageType: 'chapter',
+            globalImageStyle,
           }),
         });
 
@@ -914,6 +1013,7 @@ All four fields must be coherent and internally consistent.` : '';
           title: chapter.title,
           summary: chapter.summary,
           imageType: 'chapter',
+          globalImageStyle,
         }),
       });
 
@@ -1248,6 +1348,7 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
           title: bookTitle,
           summary: `Book cover for: ${bookTitle}`,
           imageType: 'cover',
+          globalImageStyle,
         }),
       });
 
@@ -1268,6 +1369,153 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
     } finally {
       setCoverGenerationInProgress(false);
     }
+  };
+
+  const handleRegenerateAllImages = async () => {
+    if (chapterImageLoading !== null || coverGenerationInProgress) {
+      setError('Image generation already in progress. Please wait.');
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Regenerate all images?\n\nThis will regenerate the cover image and images for all ${chapters.length} chapters.\n\nThis may take several minutes.`
+    );
+
+    if (!confirmed) return;
+
+    setError('');
+    setRawError('');
+
+    // Build updated chapters array locally throughout the function
+    let updatedChapters = [...chapters];
+    let updatedCoverImage = coverImage;
+
+    // Regenerate cover image
+    if (expandedChapters.every(ch => ch)) {
+      setCoverGenerationInProgress(true);
+      setCoverImage('');
+      setStatus('Regenerating all images: Starting with cover...');
+
+      try {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        const openaiApiKey = getStoredApiKey();
+
+        // Generate title and cover
+        const titleResponse = await fetch('/api/generate-book-title', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            summary: condensedDraft,
+            characters: keyElements?.characters.map(c => c.name).join(', ') || 'Various',
+            themes: keyElements?.mainStoryLines.join(', ') || 'Adventure',
+            model,
+            apiKey: openaiApiKey,
+          }),
+        });
+
+        let generatedTitle = bookTitle;
+        if (titleResponse.ok) {
+          const titleData = await parseJsonResponse(titleResponse, 'generate-book-title');
+          generatedTitle = titleData.title || bookTitle;
+          setBookTitle(generatedTitle);
+        }
+
+        // Generate cover image based on title
+        const coverPromptText = `Professional book cover illustration in artistic style. ${condensedDraft.substring(0, 300)}. Features: ${keyElements?.characters.slice(0, 2).map(c => c.name).join(' and ') || 'main characters'}. Mood: ${keyElements?.mainStoryLines[0] || 'epic adventure'}. Rich colors, dramatic composition, suitable for novel cover art. No text, no typography, no titles, no letters. Do not depict a physical book, book cover mockup, pages, or a photo of a book; depict the scene as standalone art.`;
+
+        const imageResponse = await fetch('/api/generate-image', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            imagePrompt: coverPromptText,
+            apiKey: openaiApiKey,
+            title: generatedTitle,
+            summary: `Book cover for: ${generatedTitle}`,
+            imageType: 'cover',
+            globalImageStyle,
+          }),
+        });
+
+        if (imageResponse.ok) {
+          const imageData = await parseJsonResponse(imageResponse, 'generate-cover-image');
+          if (imageData.imageUrl) {
+            updatedCoverImage = imageData.imageUrl;
+            setCoverImage(updatedCoverImage);
+          }
+        }
+      } catch (err) {
+        console.error('Cover image regeneration failed:', err);
+      }
+    }
+
+    // Regenerate all chapter images
+    const openaiApiKey = getStoredApiKey();
+    let successCount = 0;
+    let failureCount = 0;
+
+    for (let idx = 0; idx < updatedChapters.length; idx++) {
+      const chapter = updatedChapters[idx];
+      const existingPrompt = chapter.imagePrompt || '';
+
+      if (!existingPrompt.trim()) {
+        failureCount++;
+        continue;
+      }
+
+      try {
+        setChapterImageLoading(idx);
+        setStatus(`Regenerating images: Chapter ${idx + 1}/${updatedChapters.length}...`);
+
+        const imageResponse = await fetch('/api/generate-image', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            imagePrompt: existingPrompt,
+            apiKey: openaiApiKey,
+            title: chapter.title,
+            summary: chapter.summary,
+            imageType: 'chapter',
+            globalImageStyle,
+          }),
+        });
+
+        if (!imageResponse.ok) {
+          failureCount++;
+          continue;
+        }
+
+        const imageData = await parseJsonResponse(imageResponse, 'generate-image');
+        const imageUrl = imageData.imageUrl || '';
+
+        if (!imageUrl) {
+          failureCount++;
+          continue;
+        }
+
+        // Update in local array
+        updatedChapters[idx] = {
+          ...updatedChapters[idx],
+          imageUrl,
+        };
+        successCount++;
+
+        // Small delay between image generation requests to avoid rate limits
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      } catch (err: any) {
+        console.error(`Chapter ${idx + 1} image regeneration failed:`, err);
+        failureCount++;
+      } finally {
+        setChapterImageLoading(null);
+      }
+    }
+
+    // Update state once with all changes, then save
+    setChapters(updatedChapters);
+    setCoverGenerationInProgress(false);
+    setStatus(`Image regeneration complete! ${successCount} chapter images regenerated${failureCount > 0 ? `, ${failureCount} failed` : ''}.`);
+
+    // Save with updated data
+    saveProgress(updatedCoverImage);
   };
 
   const openChapterPreviewInNewTab = (idx: number) => {
@@ -1414,6 +1662,78 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
             ))}
           </select>
         </div>
+
+        {/* Global Image Style Editor */}
+        <div className="mt-4 p-4 bg-blue-50 rounded-md border border-blue-200">
+          <div className="flex items-center justify-between mb-2">
+            <div>
+              <label className="text-sm font-medium text-gray-700">Image Generation Style:</label>
+              <p className="text-xs text-gray-500 mt-1">Auto-generated from your draft • Adjust if needed</p>
+            </div>
+            {!editingImageStyle && (
+              <div className="flex gap-2 ml-4">
+                {globalImageStyle && (
+                  <button
+                    type="button"
+                    onClick={handleRefreshImageStyle}
+                    disabled={isLoading}
+                    className="p-1 text-blue-600 hover:text-blue-800 hover:bg-blue-100 rounded disabled:opacity-50"
+                    title="Refresh style from draft"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                  </button>
+                )}
+                {globalImageStyle && (
+                  <button
+                    type="button"
+                    onClick={() => setEditingImageStyle(true)}
+                    className="text-sm text-blue-600 hover:text-blue-800 font-medium whitespace-nowrap"
+                  >
+                    ✎ Edit
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+          {editingImageStyle ? (
+            <div>
+              <textarea
+                value={globalImageStyle}
+                onChange={(e) => setGlobalImageStyle(e.target.value)}
+                placeholder="Enter image style description (e.g., 'Digital illustration, cinematic lighting, dramatic atmosphere...')"
+                className="w-full h-24 p-2 border border-gray-300 rounded-md text-sm resize-vertical"
+              />
+              <div className="mt-2 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingImageStyle(false);
+                    saveProgress();
+                  }}
+                  className="px-3 py-1 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm"
+                >
+                  Save Style
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setGlobalImageStyle('Digital illustration, cinematic lighting, dramatic atmosphere, rich color palette, professional fantasy art style, detailed and atmospheric, 4K quality, painterly aesthetic with fine brushwork, moody and immersive environment, warm and cool color contrast, professional concept art');
+                    setEditingImageStyle(false);
+                    saveProgress();
+                  }}
+                  className="px-3 py-1 bg-gray-400 text-white rounded-md hover:bg-gray-500 text-sm"
+                >
+                  Reset to Default
+                </button>
+              </div>
+            </div>
+          ) : (
+            <p className="text-xs text-gray-700 italic line-clamp-3 bg-white p-2 rounded border border-gray-200">{globalImageStyle || 'Paste your draft and click "Start Expansion" to auto-generate a style, or set it manually'}</p>
+          )}
+        </div>
+
         <div className="mt-4 flex space-x-4">
           <button
             type="submit"
@@ -1753,6 +2073,15 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
                 className="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700"
               >
                 {coverImage ? 'Regenerate' : 'Generate'} Cover Image
+              </button>
+            )}
+            {expandedChapters.every(ch => ch) && (
+              <button
+                onClick={() => handleRegenerateAllImages()}
+                disabled={chapterImageLoading !== null || coverGenerationInProgress}
+                className="px-4 py-2 bg-orange-600 text-white rounded-md hover:bg-orange-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {coverGenerationInProgress || chapterImageLoading !== null ? 'Regenerating...' : 'Regenerate All Images'}
               </button>
             )}
             {expandedChapters.every(ch => ch) && (
