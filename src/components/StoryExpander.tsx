@@ -127,10 +127,11 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
   };
 
   const modelOptions = [
-    { value: 'gpt-4o-mini', label: 'GPT-4o-mini (Fast & Cheap)' },
-    { value: 'gpt-4o', label: 'GPT-4o (Balanced)' },
-    { value: 'gpt-5-mini', label: 'GPT-5-mini (Efficient) - Default' },
-    { value: 'gpt-5', label: 'GPT-5 (PhD-Level, Powerful)' },
+    { value: 'gpt-4o-mini', label: 'GPT-4o-mini (Legacy)' },
+    { value: 'gpt-4o', label: 'GPT-4o (Legacy)' },
+    { value: 'gpt-5-mini', label: 'GPT-5 mini (Fast & Cheap) - Default' },
+    { value: 'gpt-5.2', label: 'GPT-5.2 (Best for coding)' },
+    { value: 'gpt-5.2-pro', label: 'GPT-5.2 pro (Smartest)' },
   ];
 
   const totalSteps = 4 + (chapters.length || 6) + expansionCounts.reduce((sum, count) => sum + count, 0);
@@ -932,54 +933,60 @@ All four fields must be coherent and internally consistent.` : '';
         newExpanded[currentChapterIndex] = data.details;
         setExpandedChapters(newExpanded);
 
-        // Generate image prompt for the chapter
-        setStatus(`Generating image prompt for chapter ${currentChapterIndex + 1}...`);
-        const imagePromptResponse = await fetch('/api/generate-image-prompt', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            title: chapter.title,
-            summary: chapter.summary,
-            chapterText: data.details,
-            model,
-            apiKey: openaiApiKey,
-            globalImageStyle,
-          }),
-        });
+        // Preserve existing image if it exists, otherwise generate new one
+        let imagePrompt = chapter.imagePrompt || '';
+        let imageUrl = chapter.imageUrl || '';
 
-        let imagePrompt = '';
-        let imageUrl = '';
-
-        if (imagePromptResponse.ok) {
-          const imagePromptData = await parseJsonResponse(imagePromptResponse, 'generate-image-prompt');
-          imagePrompt = imagePromptData.imagePrompt;
-
-          // Generate image using DALL-E 3
-          setStatus(`Generating image for chapter ${currentChapterIndex + 1}...`);
-          const imageResponse = await fetch('/api/generate-image', {
+        // Only generate new image if chapter doesn't have one
+        if (!imageUrl || !imagePrompt) {
+          // Generate image prompt for the chapter
+          setStatus(`Generating image prompt for chapter ${currentChapterIndex + 1}...`);
+          const imagePromptResponse = await fetch('/api/generate-image-prompt', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              imagePrompt,
-              apiKey: openaiApiKey,
               title: chapter.title,
               summary: chapter.summary,
-              imageType: 'chapter',
+              chapterText: data.details,
+              model,
+              apiKey: openaiApiKey,
               globalImageStyle,
             }),
           });
 
-          if (imageResponse.ok) {
-            const imageData = await parseJsonResponse(imageResponse, 'generate-image');
-            imageUrl = imageData.imageUrl || '';
-            if (!imageUrl && imageData.error) {
-              console.warn(`Image generation: ${imageData.error}`);
+          if (imagePromptResponse.ok) {
+            const imagePromptData = await parseJsonResponse(imagePromptResponse, 'generate-image-prompt');
+            imagePrompt = imagePromptData.imagePrompt;
+
+            // Generate image using DALL-E 3
+            setStatus(`Generating image for chapter ${currentChapterIndex + 1}...`);
+            const imageResponse = await fetch('/api/generate-image', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                imagePrompt,
+                apiKey: openaiApiKey,
+                title: chapter.title,
+                summary: chapter.summary,
+                imageType: 'chapter',
+                globalImageStyle,
+              }),
+            });
+
+            if (imageResponse.ok) {
+              const imageData = await parseJsonResponse(imageResponse, 'generate-image');
+              imageUrl = imageData.imageUrl || '';
+              if (!imageUrl && imageData.error) {
+                console.warn(`Image generation: ${imageData.error}`);
+              }
+            } else {
+              console.warn(`Failed to generate image for chapter ${currentChapterIndex + 1}`);
             }
           } else {
-            console.warn(`Failed to generate image for chapter ${currentChapterIndex + 1}`);
+            console.warn(`Failed to generate image prompt for chapter ${currentChapterIndex + 1}`);
           }
         } else {
-          console.warn(`Failed to generate image prompt for chapter ${currentChapterIndex + 1}`);
+          setStatus(`Using existing image for chapter ${currentChapterIndex + 1}...`);
         }
 
         // Update chapter with image prompt and URL
@@ -1198,51 +1205,57 @@ All four fields must be coherent and internally consistent.` : '';
       newCounts[chapterIndex] = 0;
       setExpansionCounts(newCounts);
 
-      // Regenerate image prompt and image
-      setStatus(`Regenerating image for chapter ${chapterIndex + 1}...`);
-      const imagePromptResponse = await fetch('/api/generate-image-prompt', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: chapter.title,
-          summary: chapter.summary,
-          chapterText: data.details,
-          model,
-          apiKey: openaiApiKey,
-          globalImageStyle,
-        }),
-      });
+      // Preserve existing image if it exists, otherwise generate new one
+      let imagePrompt = chapter.imagePrompt || '';
+      let imageUrl = chapter.imageUrl || '';
 
-      let imagePrompt = '';
-      let imageUrl = '';
-
-      if (imagePromptResponse.ok) {
-        const imagePromptData = await parseJsonResponse(imagePromptResponse, 'generate-image-prompt');
-        imagePrompt = imagePromptData.imagePrompt;
-
-        const imageResponse = await fetch('/api/generate-image', {
+      // Only regenerate image if chapter doesn't have one
+      if (!imageUrl || !imagePrompt) {
+        // Regenerate image prompt and image
+        setStatus(`Regenerating image for chapter ${chapterIndex + 1}...`);
+        const imagePromptResponse = await fetch('/api/generate-image-prompt', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            imagePrompt,
-            apiKey: openaiApiKey,
             title: chapter.title,
             summary: chapter.summary,
-            imageType: 'chapter',
+            chapterText: data.details,
+            model,
+            apiKey: openaiApiKey,
             globalImageStyle,
           }),
         });
 
-        if (imageResponse.ok) {
-          const imageData = await parseJsonResponse(imageResponse, 'generate-image');
-          imageUrl = imageData.imageUrl || '';
-          if (!imageUrl && imageData.error) {
-            console.warn(`Image generation: ${imageData.error}`);
+        if (imagePromptResponse.ok) {
+          const imagePromptData = await parseJsonResponse(imagePromptResponse, 'generate-image-prompt');
+          imagePrompt = imagePromptData.imagePrompt;
+
+          const imageResponse = await fetch('/api/generate-image', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              imagePrompt,
+              apiKey: openaiApiKey,
+              title: chapter.title,
+              summary: chapter.summary,
+              imageType: 'chapter',
+              globalImageStyle,
+            }),
+          });
+
+          if (imageResponse.ok) {
+            const imageData = await parseJsonResponse(imageResponse, 'generate-image');
+            imageUrl = imageData.imageUrl || '';
+            if (!imageUrl && imageData.error) {
+              console.warn(`Image generation: ${imageData.error}`);
+            }
           }
         }
+      } else {
+        setStatus(`Using existing image for chapter ${chapterIndex + 1}...`);
       }
 
-      // Update chapter with new image info
+      // Update chapter with image info (preserved or new)
       const newChapters = [...chapters];
       newChapters[chapterIndex] = {
         ...newChapters[chapterIndex],

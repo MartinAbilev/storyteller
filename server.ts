@@ -108,15 +108,49 @@ const generateWithModel = async (prompt: string, model: string, openaiClient?: O
   const client = openaiClient || openai;
   console.log(`[Backend] Generating with OpenAI model "${model}" (prompt length: ${prompt.length} chars, retries left: ${retries}, fallback: ${isFallback})`);
 
-  const tokenParam = model.startsWith('gpt-5') ? { max_completion_tokens: 4000 } : { max_tokens: 4000 };
-
   try {
-    const completion = await client.chat.completions.create({
-      model,
-      messages: [{ role: 'user', content: prompt }],
-      ...tokenParam,
-    });
-    const output = completion.choices[0]?.message?.content || '';
+    let output = '';
+
+    // GPT-5.2 and GPT-5.2-pro use the new responses API
+    if (model.includes('5.2')) {
+      const response = await (client as any).responses.create({
+        model,
+        input: prompt,
+      });
+
+      // Debug: log the response structure to understand it
+      console.log('[Backend] GPT-5.2 response structure:', JSON.stringify(response, null, 2));
+
+      // Extract text from response structure: find the "message" type in output array
+      if (response.output && Array.isArray(response.output)) {
+        // Find the message object (type: "message") in the output array
+        const messageObj = response.output.find((item: any) => item.type === 'message');
+        if (messageObj && messageObj.content && Array.isArray(messageObj.content) && messageObj.content.length > 0) {
+          output = messageObj.content[0].text || '';
+        }
+      }
+
+      // Fallback: try output_text property
+      if (!output && response.output_text) {
+        output = response.output_text;
+      }
+
+      // If still no output, log error
+      if (!output) {
+        console.error('[Backend] Failed to extract text from GPT-5.2 response. Full response:', JSON.stringify(response, null, 2));
+        throw new Error('Could not extract text from GPT-5.2 response structure');
+      }
+    } else {
+      // GPT-5-mini and GPT-4o use chat completions API
+      const tokenParam = model.startsWith('gpt-5') ? { max_completion_tokens: 4000 } : { max_tokens: 4000 };
+      const completion = await client.chat.completions.create({
+        model,
+        messages: [{ role: 'user', content: prompt }],
+        ...tokenParam,
+      });
+      output = completion.choices[0]?.message?.content || '';
+    }
+
     if (!output) {
       throw new Error('Empty response from OpenAI API');
     }
@@ -128,9 +162,9 @@ const generateWithModel = async (prompt: string, model: string, openaiClient?: O
       console.log(`[Backend] Retrying with same model... (${retries - 1} left)`);
       return generateWithModel(prompt, model, openaiClient, retries - 1, isFallback);
     }
-    if (!isFallback && model !== 'gpt-4o-mini') {
-      console.log(`[Backend] Falling back to gpt-4o-mini...`);
-      return generateWithModel(prompt, 'gpt-4o-mini', openaiClient, 3, true);
+    if (!isFallback && model !== 'gpt-5-mini') {
+      console.log(`[Backend] Falling back to gpt-5-mini...`);
+      return generateWithModel(prompt, 'gpt-5-mini', openaiClient, 3, true);
     }
     throw error;
   }
