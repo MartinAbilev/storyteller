@@ -1,36 +1,48 @@
 import React, { useState, useEffect, useImperativeHandle, forwardRef, useRef } from 'react';
 import { API_KEYS_STORAGE_KEY, type ApiKeys } from './SettingsModal';
 
-interface Character {
-  name: string;
-  gender: string;
-  role: string;
-  traits: string;
-  affiliations?: string;
-}
+// Import types and constants
+import {
+  LOCAL_STORAGE_KEY,
+  PROMPTS_STORAGE_KEY,
+  type Character,
+  type KeyElements,
+  type Chapter,
+  MODEL_OPTIONS,
+  GLOBAL_IMAGE_STYLE
+} from './StoryExpander/constants';
 
-interface KeyElements {
-  characters: Character[];
-  keyEvents: string[];
-  timeline: string[];
-  uniqueDetails: string[];
-  mainStoryLines: string[];
-}
+// Import utilities
+import {
+  chunkText,
+  hashDraft,
+  imageUrlToBase64,
+  getStoredApiKey,
+  handleApiError,
+  parseJsonResponse
+} from './StoryExpander/utils';
 
-interface Chapter {
-  title: string;
-  summary: string;
-  keyEvents?: string[];
-  characterTraits?: string[];
-  timeline?: string;
-  expansionCount?: number;
-  customPrompt?: string;
-  imagePrompt?: string;
-  imageUrl?: string;
-}
+// Import API functions
+import {
+  summarizeDraft,
+  extractKeyElements,
+  generateOutline,
+  expandChapter,
+  expandChapterMore,
+  generateImage,
+  generateImagePrompt,
+  refreshImageStyle,
+  generateBookTitle
+} from './StoryExpander/api';
 
-const LOCAL_STORAGE_KEY = 'storyExpanderProgress';
-const PROMPTS_STORAGE_KEY = 'storyExpanderPrompts';
+// Import preview functions
+import {
+  openChapterPreviewInNewTab,
+  openFullBookPreviewInNewTab
+} from './StoryExpander/previews';
+
+// Import clipboard utilities
+import { copyContentToClipboard } from './StoryExpander/clipboard';
 
 const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
   const [draft, setDraft] = useState<string>('');
@@ -86,166 +98,9 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
     },
   }));
 
-  // Helper function to get stored API key
-  const getStoredApiKey = (): string => {
-    try {
-      const stored = localStorage.getItem(API_KEYS_STORAGE_KEY);
-      if (stored) {
-        const keys = JSON.parse(stored) as ApiKeys;
-        return keys.openai || '';
-      }
-    } catch (e) {
-      console.error('Failed to get stored API key:', e);
-    }
-    return '';
-  };
-
-  // Helper function to handle API errors
-  const handleApiError = (error: any, response?: Response): Error => {
-    if (response?.status === 401) {
-      return new Error(
-        error?.error ||
-        'API key not found. Add your key in Settings (⚙️) or use OPENAI_API_KEY in .env. Settings take priority.'
-      );
-    }
-    return error || new Error('Unknown error');
-  };
-
-  // Helper function to safely parse JSON responses
-  const parseJsonResponse = async (response: Response, context: string): Promise<any> => {
-    try {
-      const text = await response.text();
-      if (!text) {
-        throw new Error('Empty response body');
-      }
-      return JSON.parse(text);
-    } catch (jsonError: any) {
-      console.error(`[Frontend] Failed to parse JSON in ${context}:`, jsonError);
-      console.error(`[Frontend] Response status: ${response.status}`);
-      throw new Error(`Server error in ${context}: ${jsonError.message || 'Invalid response format'}`);
-    }
-  };
-
-  const modelOptions = [
-    { value: 'gpt-4o-mini', label: 'GPT-4o-mini (Legacy)' },
-    { value: 'gpt-4o', label: 'GPT-4o (Legacy)' },
-    { value: 'gpt-5-mini', label: 'GPT-5 mini (Fast & Cheap) - Default' },
-    { value: 'gpt-5.2', label: 'GPT-5.2 (Best for coding)' },
-    { value: 'gpt-5.2-pro', label: 'GPT-5.2 pro (Smartest)' },
-  ];
-
   const totalSteps = 4 + (chapters.length || 6) + expansionCounts.reduce((sum, count) => sum + count, 0);
   const completedSteps = currentStep + (currentStep === 3 ? currentChapterIndex : 0) + expansionCounts.reduce((sum, count) => sum + count, 0);
   const progressPercent = ((completedSteps / totalSteps) * 100).toFixed(1);
-
-  const chunkText = (text: string, maxBytes = 50000): string[] => {
-    const encoder = new TextEncoder();
-    const chunks: string[] = [];
-    let currentChunk = '';
-    let currentBytes = 0;
-    const sentences = text.match(/[^.!?]+[.!?]+/gs) || [text];
-    console.log(`[Frontend] chunkText: Processing ${sentences.length} sentences`);
-    for (const sentence of sentences) {
-      const sentenceBytes = encoder.encode(sentence).length;
-      if (currentBytes + sentenceBytes > maxBytes) {
-        if (currentChunk) {
-          chunks.push(currentChunk.trim());
-          console.log(`[Frontend] chunkText: Created chunk ${chunks.length} (~${encoder.encode(currentChunk).length} bytes)`);
-        }
-        currentChunk = sentence;
-        currentBytes = sentenceBytes;
-      } else {
-        currentChunk += ' ' + sentence;
-        currentBytes += sentenceBytes;
-      }
-    }
-    if (currentChunk) {
-      chunks.push(currentChunk.trim());
-      console.log(`[Frontend] chunkText: Created final chunk ${chunks.length} (~${encoder.encode(currentChunk).length} bytes)`);
-    }
-    console.log(`[Frontend] chunkText: Generated ${chunks.length} chunks`);
-    return chunks;
-  };
-
-  const hashDraft = async (text: string): Promise<string> => {
-    if (!text) return '';
-    try {
-      const isSecureContext = window.isSecureContext || (window.location.hostname === 'localhost' || window.location.protocol === 'https:');
-      console.log(`[Frontend] hashDraft: Running in secure context: ${isSecureContext}, hostname: ${window.location.hostname}, protocol: ${window.location.protocol}`);
-
-      if (!window.crypto?.subtle) {
-        console.warn('[Frontend] hashDraft: Web Crypto API (crypto.subtle) unavailable, using fallback hash');
-        let hash = 0;
-        for (let i = 0; i < text.length; i++) {
-          const char = text.charCodeAt(i);
-          hash = ((hash << 5) - hash) + char;
-          hash = hash & hash;
-        }
-        return Math.abs(hash).toString(16).padStart(8, '0');
-      }
-
-      const encoder = new TextEncoder();
-      const data = encoder.encode(text);
-      const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-      const hashArray = Array.from(new Uint8Array(hashBuffer));
-      return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-    } catch (error: any) {
-      console.error(`[Frontend] hashDraft error: ${error.message || error}`);
-      let hash = 0;
-      for (let i = 0; i < text.length; i++) {
-        const char = text.charCodeAt(i);
-        hash = ((hash << 5) - hash) + char;
-        hash = hash & hash;
-      }
-      return Math.abs(hash).toString(16).padStart(8, '0');
-    }
-  };
-
-  // Convert image URL to Base64
-  const imageUrlToBase64 = async (url: string): Promise<string> => {
-    try {
-      const response = await fetch(url);
-      const blob = await response.blob();
-      return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(reader.result as string);
-        reader.onerror = reject;
-        reader.readAsDataURL(blob);
-      });
-    } catch (error) {
-      console.error('Failed to convert image to base64:', error);
-      return url; // Return original URL if conversion fails
-    }
-  };
-
-  // Copy HTML content with embedded images to clipboard
-  const copyContentToClipboard = async (htmlContent: string, imageUrls: string[]) => {
-    try {
-      setStatus('Converting images for copy...');
-      let htmlWithEmbeddedImages = htmlContent;
-
-      // Replace image URLs with base64 data
-      for (const imageUrl of imageUrls) {
-        if (imageUrl) {
-          const base64 = await imageUrlToBase64(imageUrl);
-          htmlWithEmbeddedImages = htmlWithEmbeddedImages.replace(
-            new RegExp(`src="${imageUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`, 'g'),
-            `src="${base64}"`
-          );
-        }
-      }
-
-      // Copy to clipboard
-      const blob = new Blob([htmlWithEmbeddedImages], { type: 'text/html' });
-      const data = [new ClipboardItem({ 'text/html': blob })];
-      await navigator.clipboard.write(data);
-      setStatus('Content copied to clipboard with images! Paste into Google Docs.');
-      setTimeout(() => setStatus(''), 3000);
-    } catch (error) {
-      console.error('Failed to copy content:', error);
-      setError('Failed to copy content. Try right-clicking and selecting "Copy".');
-    }
-  };
 
   useEffect(() => {
     const loadProgress = async () => {
@@ -372,25 +227,14 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
       try {
         setChapterImagePromptLoading(idx);
 
-        const imagePromptResponse = await fetch('/api/generate-image-prompt', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            title: chapter.title,
-            summary: chapter.summary,
-            chapterText: chapterText,
-            model,
-            apiKey: openaiApiKey,
-            globalImageStyle,
-          }),
+        const imagePromptData = await generateImagePrompt({
+          title: chapter.title,
+          summary: chapter.summary,
+          chapterText,
+          model,
+          globalImageStyle,
+          apiKey: openaiApiKey,
         });
-
-        if (!imagePromptResponse.ok) {
-          failureCount++;
-          continue;
-        }
-
-        const imagePromptData = await parseJsonResponse(imagePromptResponse, 'generate-image-prompt');
         const newImagePrompt = imagePromptData.imagePrompt;
 
         if (!newImagePrompt || !newImagePrompt.trim()) {
@@ -449,25 +293,14 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
         setChapterImagePromptLoading(idx);
 
         // Regenerate image prompt with new global style
-        const imagePromptResponse = await fetch('/api/generate-image-prompt', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            title: chapter.title,
-            summary: chapter.summary,
-            chapterText: chapterText,
-            model,
-            apiKey: openaiApiKey,
-            globalImageStyle,
-          }),
+        const imagePromptData = await generateImagePrompt({
+          title: chapter.title,
+          summary: chapter.summary,
+          chapterText,
+          model,
+          globalImageStyle,
+          apiKey: openaiApiKey,
         });
-
-        if (!imagePromptResponse.ok) {
-          failureCount++;
-          continue;
-        }
-
-        const imagePromptData = await parseJsonResponse(imagePromptResponse, 'generate-image-prompt');
         const newImagePrompt = imagePromptData.imagePrompt;
 
         if (!newImagePrompt || !newImagePrompt.trim()) {
@@ -482,25 +315,14 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
         };
 
         // Regenerate image with new prompt and global style
-        const imageResponse = await fetch('/api/generate-image', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            imagePrompt: newImagePrompt,
-            apiKey: openaiApiKey,
-            title: chapter.title,
-            summary: chapter.summary,
-            imageType: 'chapter',
-            globalImageStyle,
-          }),
+        const imageData = await generateImage({
+          imagePrompt: newImagePrompt,
+          title: chapter.title,
+          summary: chapter.summary,
+          imageType: 'chapter',
+          globalImageStyle,
+          apiKey: openaiApiKey,
         });
-
-        if (!imageResponse.ok) {
-          failureCount++;
-          continue;
-        }
-
-        const imageData = await parseJsonResponse(imageResponse, 'generate-image');
         const imageUrl = imageData.imageUrl || '';
 
         if (!imageUrl) {
@@ -675,23 +497,21 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
     setStatus('Regenerating summary with new prompt...');
     try {
       const chunks = chunkText(draft);
-      let condensedDraft = '';
+      let condensed = '';
       const openaiApiKey = getStoredApiKey();
       for (let i = 0; i < chunks.length; i++) {
         console.log(`[Frontend] Processing chunk ${i + 1}/${chunks.length}`);
-        const response = await fetch('/api/summarize-draft', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ draft: chunks[i], model, customPrompt: summaryPrompt, chunkIndex: i, totalChunks: chunks.length, openaiApiKey }),
+        const data = await summarizeDraft({
+          draft: chunks[i],
+          model,
+          chunkIndex: i,
+          totalChunks: chunks.length,
+          customPrompt: summaryPrompt,
+          openaiApiKey,
         });
-        if (!response.ok) {
-          const errData = await parseJsonResponse(response, 'summarize-draft error');
-          throw handleApiError(errData, response);
-        }
-        const data = await parseJsonResponse(response, 'summarize-draft');
-        condensedDraft += data.condensedChunk + ' ';
+        condensed += data.condensedChunk + ' ';
       }
-      setCondensedDraft(condensedDraft.trim());
+      setCondensedDraft(condensed.trim());
       setKeyElements(null);
       setChapters([]);
       setExpandedChapters([]);
@@ -764,15 +584,14 @@ Output strictly JSON: an array of chapter objects with fields { "title", "summar
       const openaiApiKey = getStoredApiKey();
       try {
         const extractPrompt = `Please update and augment the story's key elements based on the following previous chapter context and any custom prompts.\n\nContext:\n${previousContext}\n\nExisting key elements (base): ${JSON.stringify(keyElements)}\n\nAdditional instructions: If the context introduces new characters, factions, recurring antagonists, or major plot threads (for example 'Orks' arriving), include them as persistent key elements so they continue to appear across later chapters. Output a JSON object { characters: [...], keyEvents: [...], timeline: [...], uniqueDetails: [...], mainStoryLines: [...] } with no Markdown or extra text.`;
-        const extractResp = await fetch('/api/extract-key-elements', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ condensedDraft, model, customPrompt: extractPrompt, openaiApiKey }),
+        const extractData = await extractKeyElements({
+          condensedDraft,
+          model,
+          customPrompt: extractPrompt,
+          openaiApiKey,
         });
-        if (extractResp.ok) {
-          const extractData = await parseJsonResponse(extractResp, 'augment-key-elements');
-          const newKE = extractData.keyElements;
-          if (newKE) {
+        const newKE = extractData.keyElements;
+        if (newKE) {
             // merge characters by name, keyEvents/timeline/uniqueDetails/mainStoryLines by uniqueness
             const mergeUnique = (a: any[] = [], b: any[] = []) => {
               const set = new Set(a.map(x => JSON.stringify(x)));
@@ -797,27 +616,19 @@ Output strictly JSON: an array of chapter objects with fields { "title", "summar
               mainStoryLines: mergeUnique(keyElements.mainStoryLines || [], newKE.mainStoryLines || []),
             };
           }
-        } else {
-          const errData = await parseJsonResponse(extractResp, 'augment-key-elements error');
-          console.warn('[Frontend] augment keyElements: extract endpoint failed:', errData.error || 'Unknown error');
-        }
       } catch (e) {
         console.warn('[Frontend] augment keyElements failed', e);
       }
 
       // Now call generate-outline using the augmented key elements so introduced
       // entities (like Orks) are preserved and considered when regenerating later chapters.
-      const response = await fetch('/api/generate-outline', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ condensedDraft, model, customPrompt, keyElements: augmentedKeyElements, openaiApiKey }),
+      const data = await generateOutline({
+        condensedDraft,
+        model,
+        keyElements: augmentedKeyElements,
+        customPrompt,
+        openaiApiKey,
       });
-      if (!response.ok) {
-        const errData = await response.json();
-        const error = handleApiError(errData, response);
-        throw Object.assign(error, { rawResponse: errData.rawResponse || '' });
-      }
-      const data = await response.json();
       const validatedChapters = data.chapters.map((ch: Chapter) => ({
         title: ch.title || 'Untitled Chapter',
         summary: ch.summary || 'No summary available.',
@@ -867,40 +678,33 @@ Output strictly JSON: an array of chapter objects with fields { "title", "summar
       if (currentStep === 0) {
         setStatus('Step 1: Summarizing draft chunks...');
         const chunks = chunkText(draft);
-        let condensedDraft = '';
+        let condensed = '';
         const openaiApiKey = getStoredApiKey();
         for (let i = 0; i < chunks.length; i++) {
           console.log(`[Frontend] Processing chunk ${i + 1}/${chunks.length}`);
-          const response = await fetch('/api/summarize-draft', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ draft: chunks[i], model, customPrompt: summaryPrompt, chunkIndex: i, totalChunks: chunks.length, openaiApiKey }),
+          const data = await summarizeDraft({
+            draft: chunks[i],
+            model,
+            chunkIndex: i,
+            totalChunks: chunks.length,
+            customPrompt: summaryPrompt,
+            openaiApiKey,
           });
-          if (!response.ok) {
-            const errData = await response.json();
-            throw new Error(errData.error || `Summarization failed for chunk ${i + 1}`);
-          }
-          const data = await response.json();
-          condensedDraft += data.condensedChunk + ' ';
+          condensed += data.condensedChunk + ' ';
         }
-        setCondensedDraft(condensedDraft.trim());
+        setCondensedDraft(condensed.trim());
         setCurrentStep(1);
         setStatus('Step 1 complete: Condensed draft ready (see below).');
         saveProgress();
       } else if (currentStep === 1) {
         setStatus('Step 2: Extracting key elements...');
         const openaiApiKey = getStoredApiKey();
-        const response = await fetch('/api/extract-key-elements', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ condensedDraft, model, customPrompt: summaryPrompt, openaiApiKey }),
+        const data = await extractKeyElements({
+          condensedDraft,
+          model,
+          customPrompt: summaryPrompt,
+          openaiApiKey,
         });
-        if (!response.ok) {
-          const errData = await response.json();
-          const error = handleApiError(errData, response);
-          throw Object.assign(error, { rawResponse: errData.rawResponse || '' });
-        }
-        const data = await response.json();
         setKeyElements(data.keyElements);
         setCurrentStep(2);
         setStatus('Step 2 complete: Key elements extracted (see below).');
@@ -919,17 +723,13 @@ CRITICAL: When applying the above instructions, you MUST regenerate ALL chapter 
 All four fields must be coherent and internally consistent.` : '';
 
         const openaiApiKey = getStoredApiKey();
-        const response = await fetch('/api/generate-outline', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ condensedDraft, model, customPrompt: enhancedSummaryPrompt, keyElements, openaiApiKey }),
+        const data = await generateOutline({
+          condensedDraft,
+          model,
+          keyElements,
+          customPrompt: enhancedSummaryPrompt,
+          openaiApiKey,
         });
-        if (!response.ok) {
-          const errData = await response.json();
-          const error = handleApiError(errData, response);
-          throw Object.assign(error, { rawResponse: errData.rawResponse || '' });
-        }
-        const data = await response.json();
         const validatedChapters = data.chapters.map((ch: Chapter) => ({
           title: ch.title || 'Untitled Chapter',
           summary: ch.summary || 'No summary available.',
@@ -951,30 +751,21 @@ All four fields must be coherent and internally consistent.` : '';
         const openaiApiKey = getStoredApiKey();
         setStatus(`Step 4: Expanding chapter ${currentChapterIndex + 1}/${chapters.length} ("${chapter.title}")...`);
         setChapterLoading(currentChapterIndex);
-        const response = await fetch('/api/expand-chapter', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            condensedDraft,
-            title: chapter.title,
-            summary: chapter.summary,
-            keyEvents: chapter.keyEvents || [],
-            characterTraits: chapter.characterTraits || [],
-            timeline: chapter.timeline || 'Unknown timeline',
-            model,
-            customPrompt,
-            chapterIndex: currentChapterIndex,
-            previousChapters: chapters.slice(0, currentChapterIndex),
-            totalChapters: chapters.length,
-            keyElements,
-            openaiApiKey,
-          }),
+        const data = await expandChapter({
+          condensedDraft,
+          title: chapter.title,
+          summary: chapter.summary,
+          keyEvents: chapter.keyEvents || [],
+          characterTraits: chapter.characterTraits || [],
+          timeline: chapter.timeline || 'Unknown timeline',
+          model,
+          customPrompt,
+          chapterIndex: currentChapterIndex,
+          previousChapters: chapters.slice(0, currentChapterIndex),
+          totalChapters: chapters.length,
+          keyElements,
+          apiKey: openaiApiKey,
         });
-        if (!response.ok) {
-          const errData = await parseJsonResponse(response, 'expand-chapter error');
-          throw handleApiError(errData, response) || new Error(`Expansion for chapter ${currentChapterIndex + 1} failed`);
-        }
-        const data = await parseJsonResponse(response, 'expand-chapter');
         const newExpanded = [...expandedChapters];
         newExpanded[currentChapterIndex] = data.details;
         setExpandedChapters(newExpanded);
@@ -987,49 +778,31 @@ All four fields must be coherent and internally consistent.` : '';
         if (!imageUrl || !imagePrompt) {
           // Generate image prompt for the chapter
           setStatus(`Generating image prompt for chapter ${currentChapterIndex + 1}...`);
-          const imagePromptResponse = await fetch('/api/generate-image-prompt', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              title: chapter.title,
-              summary: chapter.summary,
-              chapterText: data.details,
-              model,
-              apiKey: openaiApiKey,
-              globalImageStyle,
-            }),
+          const imagePromptData = await generateImagePrompt({
+            title: chapter.title,
+            summary: chapter.summary,
+            chapterText: data.details,
+            model,
+            globalImageStyle,
+            apiKey: openaiApiKey,
           });
+          imagePrompt = imagePromptData.imagePrompt;
 
-          if (imagePromptResponse.ok) {
-            const imagePromptData = await parseJsonResponse(imagePromptResponse, 'generate-image-prompt');
-            imagePrompt = imagePromptData.imagePrompt;
-
+          if (imagePrompt) {
             // Generate image using DALL-E 3
             setStatus(`Generating image for chapter ${currentChapterIndex + 1}...`);
-            const imageResponse = await fetch('/api/generate-image', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                imagePrompt,
-                apiKey: openaiApiKey,
-                title: chapter.title,
-                summary: chapter.summary,
-                imageType: 'chapter',
-                globalImageStyle,
-              }),
+            const imageData = await generateImage({
+              imagePrompt,
+              title: chapter.title,
+              summary: chapter.summary,
+              imageType: 'chapter',
+              globalImageStyle,
+              apiKey: openaiApiKey,
             });
-
-            if (imageResponse.ok) {
-              const imageData = await parseJsonResponse(imageResponse, 'generate-image');
-              imageUrl = imageData.imageUrl || '';
-              if (!imageUrl && imageData.error) {
-                console.warn(`Image generation: ${imageData.error}`);
-              }
-            } else {
-              console.warn(`Failed to generate image for chapter ${currentChapterIndex + 1}`);
+            imageUrl = imageData.imageUrl || '';
+            if (!imageUrl && imageData.error) {
+              console.warn(`Image generation: ${imageData.error}`);
             }
-          } else {
-            console.warn(`Failed to generate image prompt for chapter ${currentChapterIndex + 1}`);
           }
         } else {
           setStatus(`Using existing image for chapter ${currentChapterIndex + 1}...`);
@@ -1076,22 +849,15 @@ All four fields must be coherent and internally consistent.` : '';
       setStatus('Analyzing draft to generate custom image style...');
       try {
         const openaiApiKey = getStoredApiKey();
-        const styleResponse = await fetch('/api/generate-image-style', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            draft: draft.substring(0, 2000),
-            model,
-            apiKey: openaiApiKey,
-          }),
+        const styleData = await refreshImageStyle({
+          draft: draft.substring(0, 2000),
+          model,
+          apiKey: openaiApiKey,
         });
 
-        if (styleResponse.ok) {
-          const styleData = await parseJsonResponse(styleResponse, 'generate-image-style');
-          if (styleData.imageStyle) {
-            setGlobalImageStyle(styleData.imageStyle);
-            console.log('[Frontend] Generated custom image style:', styleData.imageStyle);
-          }
+        if (styleData.imageStyle) {
+          setGlobalImageStyle(styleData.imageStyle);
+          console.log('[Frontend] Generated custom image style:', styleData.imageStyle);
         } else {
           console.warn('Failed to generate custom image style, using default');
         }
@@ -1122,33 +888,26 @@ All four fields must be coherent and internally consistent.` : '';
     setError('');
     try {
       const openaiApiKey = getStoredApiKey();
-      const styleResponse = await fetch('/api/generate-image-style', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          draft: draft.substring(0, 2000),
-          model,
-          apiKey: openaiApiKey,
-        }),
+      const styleData = await refreshImageStyle({
+        draft: draft.substring(0, 2000),
+        model,
+        apiKey: openaiApiKey,
       });
 
-      if (styleResponse.ok) {
-        const styleData = await parseJsonResponse(styleResponse, 'generate-image-style');
-        if (styleData.imageStyle) {
-          pendingStyleChangeRef.current = true;
-          setGlobalImageStyle(styleData.imageStyle);
-          setStatus('Image style refreshed!');
-          console.log('[Frontend] Refreshed image style:', styleData.imageStyle);
-          // Directly save the refreshed style to localStorage to avoid async state issues
-          try {
-            const promptsRaw = localStorage.getItem(PROMPTS_STORAGE_KEY) || '{}';
-            const prompts = JSON.parse(promptsRaw);
-            prompts.globalImageStyle = styleData.imageStyle;
-            localStorage.setItem(PROMPTS_STORAGE_KEY, JSON.stringify(prompts));
-            console.log('[Frontend] Saved refreshed style to PROMPTS_STORAGE_KEY');
-          } catch (e) {
-            console.warn('[Frontend] Failed to save refreshed style:', e);
-          }
+      if (styleData.imageStyle) {
+        pendingStyleChangeRef.current = true;
+        setGlobalImageStyle(styleData.imageStyle);
+        setStatus('Image style refreshed!');
+        console.log('[Frontend] Refreshed image style:', styleData.imageStyle);
+        // Directly save the refreshed style to localStorage to avoid async state issues
+        try {
+          const promptsRaw = localStorage.getItem(PROMPTS_STORAGE_KEY) || '{}';
+          const prompts = JSON.parse(promptsRaw);
+          prompts.globalImageStyle = styleData.imageStyle;
+          localStorage.setItem(PROMPTS_STORAGE_KEY, JSON.stringify(prompts));
+          console.log('[Frontend] Saved refreshed style to PROMPTS_STORAGE_KEY');
+        } catch (e) {
+          console.warn('[Frontend] Failed to save refreshed style:', e);
         }
       } else {
         setError('Failed to refresh image style');
@@ -1169,31 +928,22 @@ All four fields must be coherent and internally consistent.` : '';
       const customPrompt = chapterPrompts[chapterIndex] || '';
       const openaiApiKey = getStoredApiKey();
       setStatus(`Expanding chapter ${chapterIndex + 1} ("${chapter.title}") further...`);
-      const response = await fetch('/api/expand-chapter-more', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          condensedDraft,
-          title: chapter.title,
-          summary: chapter.summary,
-          keyEvents: chapter.keyEvents || [],
-          characterTraits: chapter.characterTraits || [],
-          timeline: chapter.timeline || 'Unknown timeline',
-          existingDetails: expandedChapters[chapterIndex],
-          model,
-          customPrompt,
-          chapterIndex,
-          previousChapters: chapters.slice(0, chapterIndex),
-          totalChapters: chapters.length,
-          keyElements,
-          openaiApiKey,
-        }),
+      const data = await expandChapterMore({
+        condensedDraft,
+        title: chapter.title,
+        summary: chapter.summary,
+        keyEvents: chapter.keyEvents || [],
+        characterTraits: chapter.characterTraits || [],
+        timeline: chapter.timeline || 'Unknown timeline',
+        existingDetails: expandedChapters[chapterIndex],
+        model,
+        customPrompt,
+        chapterIndex,
+        previousChapters: chapters.slice(0, chapterIndex),
+        totalChapters: chapters.length,
+        keyElements,
+        apiKey: openaiApiKey,
       });
-      if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.error || `Further expansion for chapter ${chapterIndex + 1} failed`);
-      }
-      const data = await response.json();
       const newExpanded = [...expandedChapters];
       newExpanded[chapterIndex] = data.details;
       setExpandedChapters(newExpanded);
@@ -1220,30 +970,21 @@ All four fields must be coherent and internally consistent.` : '';
       const customPrompt = chapterPrompts[chapterIndex] || '';
       const openaiApiKey = getStoredApiKey();
       setStatus(`Regenerating chapter ${chapterIndex + 1} ("${chapter.title}") with custom prompt...`);
-      const response = await fetch('/api/expand-chapter', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          condensedDraft,
-          title: chapter.title,
-          summary: chapter.summary,
-          keyEvents: chapter.keyEvents || [],
-          characterTraits: chapter.characterTraits || [],
-          timeline: chapter.timeline || 'Unknown timeline',
-          model,
-          customPrompt,
-          chapterIndex,
-          previousChapters: chapters.slice(0, chapterIndex),
-          totalChapters: chapters.length,
-          keyElements,
-          openaiApiKey,
-        }),
+      const data = await expandChapter({
+        condensedDraft,
+        title: chapter.title,
+        summary: chapter.summary,
+        keyEvents: chapter.keyEvents || [],
+        characterTraits: chapter.characterTraits || [],
+        timeline: chapter.timeline || 'Unknown timeline',
+        model,
+        customPrompt,
+        chapterIndex,
+        previousChapters: chapters.slice(0, chapterIndex),
+        totalChapters: chapters.length,
+        keyElements,
+        apiKey: openaiApiKey,
       });
-      if (!response.ok) {
-        const errData = await response.json();
-        throw handleApiError(errData, response) || new Error(`Regeneration for chapter ${chapterIndex + 1} failed`);
-      }
-      const data = await response.json();
       const newExpanded = [...expandedChapters];
       newExpanded[chapterIndex] = data.details;
       setExpandedChapters(newExpanded);
@@ -1259,42 +1000,28 @@ All four fields must be coherent and internally consistent.` : '';
       if (!imageUrl || !imagePrompt) {
         // Regenerate image prompt and image
         setStatus(`Regenerating image for chapter ${chapterIndex + 1}...`);
-        const imagePromptResponse = await fetch('/api/generate-image-prompt', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+        const imagePromptData = await generateImagePrompt({
+          title: chapter.title,
+          summary: chapter.summary,
+          chapterText: data.details,
+          model,
+          globalImageStyle,
+          apiKey: openaiApiKey,
+        });
+        imagePrompt = imagePromptData.imagePrompt;
+
+        if (imagePrompt) {
+          const imageData = await generateImage({
+            imagePrompt,
             title: chapter.title,
             summary: chapter.summary,
-            chapterText: data.details,
-            model,
-            apiKey: openaiApiKey,
+            imageType: 'chapter',
             globalImageStyle,
-          }),
-        });
-
-        if (imagePromptResponse.ok) {
-          const imagePromptData = await parseJsonResponse(imagePromptResponse, 'generate-image-prompt');
-          imagePrompt = imagePromptData.imagePrompt;
-
-          const imageResponse = await fetch('/api/generate-image', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              imagePrompt,
-              apiKey: openaiApiKey,
-              title: chapter.title,
-              summary: chapter.summary,
-              imageType: 'chapter',
-              globalImageStyle,
-            }),
+            apiKey: openaiApiKey,
           });
-
-          if (imageResponse.ok) {
-            const imageData = await parseJsonResponse(imageResponse, 'generate-image');
-            imageUrl = imageData.imageUrl || '';
-            if (!imageUrl && imageData.error) {
-              console.warn(`Image generation: ${imageData.error}`);
-            }
+          imageUrl = imageData.imageUrl || '';
+          if (!imageUrl && imageData.error) {
+            console.warn(`Image generation: ${imageData.error}`);
           }
         }
       } else {
@@ -1334,25 +1061,14 @@ All four fields must be coherent and internally consistent.` : '';
       const openaiApiKey = getStoredApiKey();
       setStatus(`Regenerating image for chapter ${chapterIndex + 1}...`);
 
-      const imageResponse = await fetch('/api/generate-image', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          imagePrompt: existingPrompt,
-          apiKey: openaiApiKey,
-          title: chapter.title,
-          summary: chapter.summary,
-          imageType: 'chapter',
-          globalImageStyle,
-        }),
+      const imageData = await generateImage({
+        imagePrompt: existingPrompt,
+        title: chapter.title,
+        summary: chapter.summary,
+        imageType: 'chapter',
+        globalImageStyle,
+        apiKey: openaiApiKey,
       });
-
-      if (!imageResponse.ok) {
-        const errData = await parseJsonResponse(imageResponse, 'generate-image error');
-        throw new Error(errData.error || 'Failed to regenerate image');
-      }
-
-      const imageData = await parseJsonResponse(imageResponse, 'generate-image');
       const imageUrl = imageData.imageUrl || '';
       if (!imageUrl && imageData.error) {
         throw new Error(imageData.error);
@@ -1383,25 +1099,14 @@ All four fields must be coherent and internally consistent.` : '';
       const openaiApiKey = getStoredApiKey();
       setStatus(`Regenerating image prompt for chapter ${chapterIndex + 1}...`);
 
-      const imagePromptResponse = await fetch('/api/generate-image-prompt', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: chapter.title,
-          summary: chapter.summary,
-          chapterText: expandedChapters[chapterIndex] || '',
-          model,
-          apiKey: openaiApiKey,
-          globalImageStyle,
-        }),
+      const imagePromptData = await generateImagePrompt({
+        title: chapter.title,
+        summary: chapter.summary,
+        chapterText: expandedChapters[chapterIndex] || '',
+        model,
+        globalImageStyle,
+        apiKey: openaiApiKey,
       });
-
-      if (!imagePromptResponse.ok) {
-        const errData = await parseJsonResponse(imagePromptResponse, 'generate-image-prompt error');
-        throw new Error(errData.error || 'Failed to regenerate image prompt');
-      }
-
-      const imagePromptData = await parseJsonResponse(imagePromptResponse, 'generate-image-prompt');
       const imagePrompt = imagePromptData.imagePrompt || '';
 
       const newChapters = [...chapters];
@@ -1489,17 +1194,13 @@ CRITICAL: When applying the above instructions, you MUST regenerate ALL chapter 
 
 All four fields must be coherent and internally consistent.`;
 
-      const response = await fetch('/api/generate-outline', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ condensedDraft, model, customPrompt: enhancedCustomPrompt, keyElements, openaiApiKey: getStoredApiKey() }),
+      const data = await generateOutline({
+        condensedDraft,
+        model,
+        keyElements,
+        customPrompt: enhancedCustomPrompt,
+        openaiApiKey: getStoredApiKey(),
       });
-      if (!response.ok) {
-        const errData = await response.json();
-        const error = handleApiError(errData, response);
-        throw Object.assign(error, { rawResponse: errData.rawResponse || '' });
-      }
-      const data = await response.json();
       let validatedChapters = data.chapters.map((ch: Chapter) => ({
         title: ch.title || 'Untitled Chapter',
         summary: ch.summary || 'No summary available.',
@@ -1527,25 +1228,23 @@ When generating Chapter ${idx + 1}, you MUST ensure the custom requirement is fu
 - The timeline
 Everything must reflect the instruction: "${perChapterPrompt}"`;
 
-            const perChapterResponse = await fetch('/api/generate-outline', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ condensedDraft, model, customPrompt: focusedPrompt, keyElements, openaiApiKey: getStoredApiKey() }),
+            const perChapterData = await generateOutline({
+              condensedDraft,
+              model,
+              keyElements,
+              customPrompt: focusedPrompt,
+              openaiApiKey: getStoredApiKey(),
             });
-
-            if (perChapterResponse.ok) {
-              const perChapterData = await perChapterResponse.json();
-              if (perChapterData.chapters && perChapterData.chapters[idx]) {
-                // Replace just this chapter with the refined version
-                const updatedChapter = perChapterData.chapters[idx];
-                validatedChapters[idx] = {
-                  title: updatedChapter.title || validatedChapters[idx].title,
-                  summary: updatedChapter.summary || validatedChapters[idx].summary,
-                  keyEvents: Array.isArray(updatedChapter.keyEvents) ? updatedChapter.keyEvents : validatedChapters[idx].keyEvents,
-                  characterTraits: Array.isArray(updatedChapter.characterTraits) ? updatedChapter.characterTraits : validatedChapters[idx].characterTraits,
-                  timeline: updatedChapter.timeline || validatedChapters[idx].timeline,
-                };
-              }
+            if (perChapterData.chapters && perChapterData.chapters[idx]) {
+              // Replace just this chapter with the refined version
+              const updatedChapter = perChapterData.chapters[idx];
+              validatedChapters[idx] = {
+                title: updatedChapter.title || validatedChapters[idx].title,
+                summary: updatedChapter.summary || validatedChapters[idx].summary,
+                keyEvents: Array.isArray(updatedChapter.keyEvents) ? updatedChapter.keyEvents : validatedChapters[idx].keyEvents,
+                characterTraits: Array.isArray(updatedChapter.characterTraits) ? updatedChapter.characterTraits : validatedChapters[idx].characterTraits,
+                timeline: updatedChapter.timeline || validatedChapters[idx].timeline,
+              };
             }
           } catch (perChapterErr: any) {
             console.warn(`[Frontend] Failed to apply per-chapter prompt to chapter ${idx}: ${perChapterErr.message}`);
@@ -1645,25 +1344,16 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
       setStatus('Generating book title and cover image...');
 
       // First, generate a short book title
-      const titleResponse = await fetch('/api/generate-book-title', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          summary: condensedDraft,
-          characters: keyElements?.characters.map(c => c.name).join(', ') || 'Various',
-          themes: keyElements?.mainStoryLines.join(', ') || 'Adventure',
-          model,
-          apiKey: openaiApiKey,
-        }),
+      const titleData = await generateBookTitle({
+        summary: condensedDraft,
+        characters: keyElements?.characters.map(c => c.name).join(', ') || 'Various',
+        themes: keyElements?.mainStoryLines.join(', ') || 'Adventure',
+        model,
+        apiKey: openaiApiKey,
       });
-
-      let bookTitle = 'Novel';
-      if (titleResponse.ok) {
-        const titleData = await parseJsonResponse(titleResponse, 'generate-book-title');
-        bookTitle = titleData.title || 'Novel';
-        setBookTitle(bookTitle);
-        console.log('[Frontend] Generated book title:', bookTitle);
-      }
+      let bookTitle = titleData.title || 'Novel';
+      setBookTitle(bookTitle);
+      console.log('[Frontend] Generated book title:', bookTitle);
 
       setStatus(`Generating cover image with title: "${bookTitle}"...`);
 
@@ -1671,30 +1361,20 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
       const coverPromptText = buildCoverPrompt();
       setCoverPrompt(coverPromptText);
 
-      const imageResponse = await fetch('/api/generate-image', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          imagePrompt: coverPromptText,
-          apiKey: openaiApiKey,
-          title: bookTitle,
-          summary: `Book cover for: ${bookTitle}`,
-          imageType: 'cover',
-          globalImageStyle,
-        }),
+      const imageData = await generateImage({
+        imagePrompt: coverPromptText,
+        title: bookTitle,
+        summary: `Book cover for: ${bookTitle}`,
+        imageType: 'cover',
+        globalImageStyle,
+        apiKey: openaiApiKey,
       });
-
-      if (imageResponse.ok) {
-        const imageData = await parseJsonResponse(imageResponse, 'generate-cover-image');
-        if (imageData.imageUrl) {
-          setCoverImage(imageData.imageUrl);
-          setStatus(`Cover image generated with title: "${bookTitle}"!`);
-          saveProgress(imageData.imageUrl, bookTitle, coverPromptText);
-        } else if (imageData.error) {
-          setStatus('Cover generation skipped (content filter)');
-        }
-      } else {
-        setStatus('Cover image generation failed, continuing anyway');
+      if (imageData.imageUrl) {
+        setCoverImage(imageData.imageUrl);
+        setStatus(`Cover image generated with title: "${bookTitle}"!`);
+        saveProgress(imageData.imageUrl, bookTitle, coverPromptText);
+      } else if (imageData.error) {
+        setStatus('Cover generation skipped (content filter)');
       }
     } catch (err) {
       console.error('Failed to generate cover image:', err);
@@ -1734,49 +1414,32 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
         const openaiApiKey = getStoredApiKey();
 
         // Generate title and cover
-        const titleResponse = await fetch('/api/generate-book-title', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            summary: condensedDraft,
-            characters: keyElements?.characters.map(c => c.name).join(', ') || 'Various',
-            themes: keyElements?.mainStoryLines.join(', ') || 'Adventure',
-            model,
-            apiKey: openaiApiKey,
-          }),
+        const titleData = await generateBookTitle({
+          summary: condensedDraft,
+          characters: keyElements?.characters.map(c => c.name).join(', ') || 'Various',
+          themes: keyElements?.mainStoryLines.join(', ') || 'Adventure',
+          model,
+          apiKey: openaiApiKey,
         });
-
-        let generatedTitle = bookTitle;
-        if (titleResponse.ok) {
-          const titleData = await parseJsonResponse(titleResponse, 'generate-book-title');
-          generatedTitle = titleData.title || bookTitle;
-          setBookTitle(generatedTitle);
-        }
+        let generatedTitle = titleData.title || bookTitle;
+        setBookTitle(generatedTitle);
 
         // Generate cover image based on title
         const coverPromptText = buildCoverPrompt();
         setCoverPrompt(coverPromptText);
         updatedCoverPrompt = coverPromptText;
 
-        const imageResponse = await fetch('/api/generate-image', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            imagePrompt: coverPromptText,
-            apiKey: openaiApiKey,
-            title: generatedTitle,
-            summary: `Book cover for: ${generatedTitle}`,
-            imageType: 'cover',
-            globalImageStyle,
-          }),
+        const imageData = await generateImage({
+          imagePrompt: coverPromptText,
+          title: generatedTitle,
+          summary: `Book cover for: ${generatedTitle}`,
+          imageType: 'cover',
+          globalImageStyle,
+          apiKey: openaiApiKey,
         });
-
-        if (imageResponse.ok) {
-          const imageData = await parseJsonResponse(imageResponse, 'generate-cover-image');
-          if (imageData.imageUrl) {
-            updatedCoverImage = imageData.imageUrl;
-            setCoverImage(updatedCoverImage);
-          }
+        if (imageData.imageUrl) {
+          updatedCoverImage = imageData.imageUrl;
+          setCoverImage(updatedCoverImage);
         }
       } catch (err) {
         console.error('Cover image regeneration failed:', err);
@@ -1801,25 +1464,14 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
         setChapterImageLoading(idx);
         setStatus(`Regenerating images: Chapter ${idx + 1}/${updatedChapters.length}...`);
 
-        const imageResponse = await fetch('/api/generate-image', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            imagePrompt: existingPrompt,
-            apiKey: openaiApiKey,
-            title: chapter.title,
-            summary: chapter.summary,
-            imageType: 'chapter',
-            globalImageStyle,
-          }),
+        const imageData = await generateImage({
+          imagePrompt: existingPrompt,
+          title: chapter.title,
+          summary: chapter.summary,
+          imageType: 'chapter',
+          globalImageStyle,
+          apiKey: openaiApiKey,
         });
-
-        if (!imageResponse.ok) {
-          failureCount++;
-          continue;
-        }
-
-        const imageData = await parseJsonResponse(imageResponse, 'generate-image');
         const imageUrl = imageData.imageUrl || '';
 
         if (!imageUrl) {
@@ -1853,175 +1505,19 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
     saveProgress(updatedCoverImage, undefined, updatedCoverPrompt);
   };
 
-  const openChapterPreviewInNewTab = async (idx: number) => {
-    const chapter = chapters[idx];
-    const chapterText = expandedChapters[idx];
-    if (!chapter || !chapterText) return;
-
-    try {
-      // Convert chapter image to Base64 if it exists
-      let embeddedImageSrc = '';
-      if (chapter.imageUrl) {
-        try {
-          embeddedImageSrc = await imageUrlToBase64(chapter.imageUrl);
-        } catch (err) {
-          console.error('Failed to convert chapter image:', err);
-          embeddedImageSrc = chapter.imageUrl; // Fallback to original URL
-        }
-      }
-
-      const htmlContent = `
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-          <meta charset="UTF-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>Chapter ${idx + 1}: ${chapter.title}</title>
-          <style>
-            body { font-family: Georgia, serif; max-width: 800px; margin: 0 auto; padding: 40px 20px; line-height: 1.8; color: #333; background: #f5f5f5; }
-            h1 { font-size: 2.5em; text-align: center; margin-bottom: 10px; }
-            .chapter-number { font-size: 1.2em; text-align: center; color: #666; margin-bottom: 30px; }
-            img { max-width: 100%; height: auto; margin: 30px 0; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-            .content { background: white; padding: 40px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-            p { text-align: justify; text-indent: 2em; margin-bottom: 1.5em; }
-            p:first-of-type { text-indent: 0; }
-            .controls { text-align: center; margin: 30px 0; }
-            button { padding: 10px 20px; margin: 5px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 1em; }
-            button:hover { background: #2563eb; }
-            @media print { body { background: white; padding: 0; } .controls { display: none; } }
-          </style>
-        </head>
-        <body>
-          <div class="controls">
-            <button onclick="window.print()">🖨️ Print</button>
-            <button onclick="window.close()">✕ Close</button>
-          </div>
-          <div class="content">
-            <div class="chapter-number">Chapter ${idx + 1}</div>
-            <h1>${chapter.title}</h1>
-            ${embeddedImageSrc ? `<img src="${embeddedImageSrc}" alt="Chapter ${idx + 1}: ${chapter.title}">` : ''}
-            ${chapterText.split('\n\n').map(para => `<p>${para}</p>`).join('')}
-          </div>
-        </body>
-        </html>
-      `;
-
-      // Create blob and open in new tab
-      const blob = new Blob([htmlContent], { type: 'text/html' });
-      const blobUrl = URL.createObjectURL(blob);
-      window.open(blobUrl, '_blank');
-    } catch (err) {
-      console.error('Error opening chapter preview:', err);
-      setError(`Failed to open chapter preview: ${err}`);
-    }
+  // Wrapper for chapter preview with local state
+  const handleOpenChapterPreview = async (idx: number) => {
+    await openChapterPreviewInNewTab(idx, chapters[idx], expandedChapters[idx], (msg) => setError(msg));
   };
 
-  const openFullBookPreviewInNewTab = async () => {
-    try {
-      setStatus('Embedding images in preview (this may take a moment)...');
+  // Wrapper for full book preview with local state
+  const handleOpenFullBookPreview = async () => {
+    await openFullBookPreviewInNewTab(chapters, expandedChapters, bookTitle, coverImage, setError, setStatus);
+  };
 
-      // Collect all image URLs
-      const imageMap: { [key: string]: string } = {};
-      const urlsToConvert: string[] = [];
-
-      if (coverImage) {
-        urlsToConvert.push(coverImage);
-      }
-
-      chapters.forEach(ch => {
-        if (ch.imageUrl) {
-          urlsToConvert.push(ch.imageUrl);
-        }
-      });
-
-      // Convert all images to Base64
-      for (const url of urlsToConvert) {
-        if (!imageMap[url]) {
-          try {
-            imageMap[url] = await imageUrlToBase64(url);
-          } catch (err) {
-            console.error(`Failed to convert image ${url}:`, err);
-            imageMap[url] = url; // Fallback to original URL
-          }
-        }
-      }
-
-      // Build HTML with embedded images
-      const chaptersHtml = chapters.map((ch, idx) => `
-        <h2 style="page-break-before: always; font-size: 2em; margin-top: 40px; margin-bottom: 20px;">Chapter ${idx + 1}: ${ch.title}</h2>
-        ${ch.imageUrl ? `<img src="${imageMap[ch.imageUrl] || ch.imageUrl}" alt="Chapter ${idx + 1}: ${ch.title}" style="max-width: 100%; height: auto; margin: 20px 0;">` : ''}
-        ${expandedChapters[idx].split('\n\n').map(para => `<p>${para}</p>`).join('')}
-      `).join('');
-
-      const toc = chapters.map((ch, idx) => `<li>Chapter ${idx + 1}: ${ch.title}</li>`).join('');
-
-      const htmlContent = `
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-          <meta charset="UTF-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>${bookTitle || 'Novel'}</title>
-          <style>
-            body { font-family: Georgia, serif; max-width: 900px; margin: 0 auto; padding: 40px 20px; line-height: 1.8; color: #333; background: #f5f5f5; }
-            .cover { text-align: center; padding: 60px 20px; background: white; margin-bottom: 40px; border-radius: 8px; }
-            .cover-image { max-width: 400px; height: auto; margin: 30px auto; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
-            .cover h1 { font-size: 3em; margin: 20px 0; }
-            .toc { background: white; padding: 40px; margin: 40px 0; border-radius: 8px; }
-            .toc h2 { font-size: 2em; margin-bottom: 20px; }
-            .toc ul { list-style: none; padding: 0; }
-            .toc li { margin: 10px 0; font-size: 1.1em; }
-            .content { background: white; padding: 40px; border-radius: 8px; }
-            h2 { font-size: 2.2em; margin-top: 60px; margin-bottom: 20px; }
-            img { max-width: 100%; height: auto; margin: 30px 0; }
-            p { text-align: justify; text-indent: 2em; margin-bottom: 1.5em; }
-            p:first-of-type { text-indent: 0; }
-            .controls { text-align: center; margin: 30px 0; position: sticky; top: 0; background: white; padding: 15px 0; border-bottom: 1px solid #ddd; }
-            button { padding: 10px 20px; margin: 5px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 1em; }
-            button:hover { background: #2563eb; }
-            .the-end { text-align: center; font-size: 2em; margin: 60px 0; color: #666; }
-            @media print { body { background: white; padding: 0; } .controls { display: none; } }
-          </style>
-        </head>
-        <body>
-          <div class="controls">
-            <button onclick="window.print()">🖨️ Print</button>
-            <button onclick="window.close()">✕ Close</button>
-          </div>
-
-          <div class="cover">
-            ${coverImage ? `<img src="${imageMap[coverImage] || coverImage}" alt="Book Cover" class="cover-image">` : '<div style="width: 300px; height: 400px; background: #e5e7eb; margin: 30px auto; display: flex; align-items: center; justify-content: center; color: #999;">No cover image</div>'}
-            <h1>${bookTitle || 'Novel'}</h1>
-          </div>
-
-          <div class="toc">
-            <h2>Table of Contents</h2>
-            <ul>${toc}</ul>
-          </div>
-
-          <div class="content">
-            ${chaptersHtml}
-            <div class="the-end">~ The End ~</div>
-          </div>
-        </body>
-        </html>
-      `;
-
-      // Create blob and open in new tab
-      const blob = new Blob([htmlContent], { type: 'text/html' });
-      const blobUrl = URL.createObjectURL(blob);
-      const newWindow = window.open(blobUrl, '_blank');
-
-      if (newWindow) {
-        setStatus('Book preview opened! Images are embedded. Use Google Translate to copy in other languages.');
-        setTimeout(() => setStatus(''), 3000);
-      } else {
-        setError('Failed to open preview window. Check if pop-ups are blocked.');
-      }
-    } catch (err) {
-      console.error('Error opening book preview:', err);
-      setError(`Failed to open book preview: ${err}`);
-    }
+  // Wrapper for copy with local state
+  const handleCopyWithImages = async (htmlContent: string, imageUrls: string[]) => {
+    await copyContentToClipboard(htmlContent, imageUrls, setStatus, setError);
   };
 
   return (
@@ -2045,7 +1541,7 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
             onChange={(e) => setModel(e.target.value)}
             className="border border-gray-300 rounded-md px-3 py-1 text-sm"
           >
-            {modelOptions.map((option) => (
+            {MODEL_OPTIONS.map((option: any) => (
               <option key={option.value} value={option.value}>
                 {option.label}
               </option>
@@ -2509,7 +2005,7 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
                     ...chapters.map(ch => ch.imageUrl).filter((url): url is string => !!url)
                   ];
 
-                  copyContentToClipboard(htmlContent, imageUrls);
+                  handleCopyWithImages(htmlContent, imageUrls);
                 }}
                 className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700"
               >
@@ -2675,14 +2171,14 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
                     ${chapterContent.split('\n\n').map(para => `<p>${para}</p>`).join('')}
                   `;
                   const imageUrls = chapter.imageUrl ? [chapter.imageUrl] : [];
-                  copyContentToClipboard(htmlContent, imageUrls);
+                  handleCopyWithImages(htmlContent, imageUrls);
                 }}
                 className="px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700"
               >
                 📋 Copy (with Images)
               </button>
               <button
-                onClick={() => openChapterPreviewInNewTab(previewChapterIndex)}
+                onClick={() => handleOpenChapterPreview(previewChapterIndex)}
                 className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
               >
                 Open in New Tab
@@ -2806,14 +2302,14 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
                     ...chapters.map(ch => ch.imageUrl).filter((url): url is string => !!url)
                   ];
 
-                  copyContentToClipboard(htmlContent, imageUrls);
+                  handleCopyWithImages(htmlContent, imageUrls);
                 }}
                 className="px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700"
               >
                 📋 Copy (with Images)
               </button>
               <button
-                onClick={() => openFullBookPreviewInNewTab()}
+                onClick={() => handleOpenFullBookPreview()}
                 className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
               >
                 Open in New Tab
