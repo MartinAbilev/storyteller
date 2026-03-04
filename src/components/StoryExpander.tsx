@@ -201,6 +201,52 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
     }
   };
 
+  // Convert image URL to Base64
+  const imageUrlToBase64 = async (url: string): Promise<string> => {
+    try {
+      const response = await fetch(url);
+      const blob = await response.blob();
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result as string);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+    } catch (error) {
+      console.error('Failed to convert image to base64:', error);
+      return url; // Return original URL if conversion fails
+    }
+  };
+
+  // Copy HTML content with embedded images to clipboard
+  const copyContentToClipboard = async (htmlContent: string, imageUrls: string[]) => {
+    try {
+      setStatus('Converting images for copy...');
+      let htmlWithEmbeddedImages = htmlContent;
+
+      // Replace image URLs with base64 data
+      for (const imageUrl of imageUrls) {
+        if (imageUrl) {
+          const base64 = await imageUrlToBase64(imageUrl);
+          htmlWithEmbeddedImages = htmlWithEmbeddedImages.replace(
+            new RegExp(`src="${imageUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`, 'g'),
+            `src="${base64}"`
+          );
+        }
+      }
+
+      // Copy to clipboard
+      const blob = new Blob([htmlWithEmbeddedImages], { type: 'text/html' });
+      const data = [new ClipboardItem({ 'text/html': blob })];
+      await navigator.clipboard.write(data);
+      setStatus('Content copied to clipboard with images! Paste into Google Docs.');
+      setTimeout(() => setStatus(''), 3000);
+    } catch (error) {
+      console.error('Failed to copy content:', error);
+      setError('Failed to copy content. Try right-clicking and selecting "Copy".');
+    }
+  };
+
   useEffect(() => {
     const loadProgress = async () => {
       // Load saved prompts first so they persist across refresh even without a draft
@@ -2383,6 +2429,38 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
                 Preview Book
               </button>
             )}
+            {expandedChapters.every(ch => ch) && (
+              <button
+                onClick={() => {
+                  const chaptersHtml = chapters.map((ch, idx) => `
+                    <h2>Chapter ${idx + 1}: ${ch.title}</h2>
+                    ${ch.imageUrl ? `<img src="${ch.imageUrl}" alt="Chapter ${idx + 1}: ${ch.title}">` : ''}
+                    ${expandedChapters[idx]?.split('\n\n').map(para => `<p>${para}</p>`).join('') || ''}
+                  `).join('');
+
+                  const toc = chapters.map((ch, idx) => `<li>Chapter ${idx + 1}: ${ch.title}</li>`).join('');
+
+                  const htmlContent = `
+                    <h1>${bookTitle || 'Novel'}</h1>
+                    <p>${chapters.length} Chapters</p>
+                    <h2>Table of Contents</h2>
+                    <ul>${toc}</ul>
+                    ${chaptersHtml}
+                    <p>~ The End ~</p>
+                  `;
+
+                  const imageUrls = [
+                    ...(coverImage ? [coverImage] : []),
+                    ...chapters.map(ch => ch.imageUrl).filter((url): url is string => !!url)
+                  ];
+
+                  copyContentToClipboard(htmlContent, imageUrls);
+                }}
+                className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700"
+              >
+                📋 Copy All (with Images)
+              </button>
+            )}
           </div>
 
           {/* Book-style formatted content */}
@@ -2533,6 +2611,22 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
             {/* Footer */}
             <div className="sticky bottom-0 p-6 bg-gray-50 border-t border-gray-200 rounded-b-lg flex justify-end gap-3">
               <button
+                onClick={() => {
+                  const chapterContent = expandedChapters[previewChapterIndex];
+                  const chapter = chapters[previewChapterIndex];
+                  const htmlContent = `
+                    <h2>${chapter.title}</h2>
+                    ${chapter.imageUrl ? `<img src="${chapter.imageUrl}" alt="Chapter ${previewChapterIndex + 1}: ${chapter.title}">` : ''}
+                    ${chapterContent.split('\n\n').map(para => `<p>${para}</p>`).join('')}
+                  `;
+                  const imageUrls = chapter.imageUrl ? [chapter.imageUrl] : [];
+                  copyContentToClipboard(htmlContent, imageUrls);
+                }}
+                className="px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700"
+              >
+                📋 Copy (with Images)
+              </button>
+              <button
                 onClick={() => openChapterPreviewInNewTab(previewChapterIndex)}
                 className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
               >
@@ -2633,6 +2727,36 @@ Everything must reflect the instruction: "${perChapterPrompt}"`;
 
             {/* Footer */}
             <div className="sticky bottom-0 p-6 bg-gray-50 border-t border-gray-200 rounded-b-lg flex justify-end gap-3">
+              <button
+                onClick={() => {
+                  const chaptersHtml = chapters.map((ch, idx) => `
+                    <h2>Chapter ${idx + 1}: ${ch.title}</h2>
+                    ${ch.imageUrl ? `<img src="${ch.imageUrl}" alt="Chapter ${idx + 1}: ${ch.title}">` : ''}
+                    ${expandedChapters[idx]?.split('\n\n').map(para => `<p>${para}</p>`).join('') || ''}
+                  `).join('');
+
+                  const toc = chapters.map((ch, idx) => `<li>Chapter ${idx + 1}: ${ch.title}</li>`).join('');
+
+                  const htmlContent = `
+                    <h1>${bookTitle || 'Novel'}</h1>
+                    <p>${chapters.length} Chapters</p>
+                    <h2>Table of Contents</h2>
+                    <ul>${toc}</ul>
+                    ${chaptersHtml}
+                    <p>~ The End ~</p>
+                  `;
+
+                  const imageUrls = [
+                    ...(coverImage ? [coverImage] : []),
+                    ...chapters.map(ch => ch.imageUrl).filter((url): url is string => !!url)
+                  ];
+
+                  copyContentToClipboard(htmlContent, imageUrls);
+                }}
+                className="px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700"
+              >
+                📋 Copy (with Images)
+              </button>
               <button
                 onClick={() => openFullBookPreviewInNewTab()}
                 className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
