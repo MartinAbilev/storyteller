@@ -1,0 +1,1473 @@
+import React, { useState, useEffect, useImperativeHandle, forwardRef, useRef } from 'react';
+import { API_KEYS_STORAGE_KEY, type ApiKeys } from './SettingsModal';
+
+// Import types and constants
+import {
+  LOCAL_STORAGE_KEY,
+  PROMPTS_STORAGE_KEY,
+  type KeyElements,
+  type Chapter,
+  MODEL_OPTIONS,
+  GLOBAL_IMAGE_STYLE
+} from './StoryExpander/constants';
+
+// Import utilities
+import {
+  chunkText,
+  hashDraft,
+  imageUrlToBase64,
+  getStoredApiKey,
+  handleApiError,
+  parseJsonResponse
+} from './StoryExpander/utils';
+
+// Import API functions
+import {
+  summarizeDraft,
+  generateImage,
+  generateImagePrompt,
+  refreshImageStyle,
+  generateBookTitle
+} from './StoryExpander/api';
+
+// Import preview functions
+import {
+  openChapterPreviewInNewTab,
+  openFullBookPreviewInNewTab
+} from './StoryExpander/previews';
+
+// Import clipboard utilities
+import { copyContentToClipboard } from './StoryExpander/clipboard';
+import { useStoryFlowHandlers } from './StoryExpander/useStoryFlowHandlers';
+import { useImageHandlers } from './StoryExpander/useImageHandlers';
+
+// Import UI components
+import { DraftUploadSection } from './StoryExpander/DraftUploadSection';
+import { CondensedDraftSection } from './StoryExpander/CondensedDraftSection';
+import { KeyElementsDisplay } from './StoryExpander/KeyElementsDisplay';
+import { OutlineSection } from './StoryExpander/OutlineSection';
+import { ExpandedChaptersSection } from './StoryExpander/ExpandedChaptersSection';
+import { FullStoryDisplay } from './StoryExpander/FullStoryDisplay';
+import { ChapterPreviewModal } from './StoryExpander/ChapterPreviewModal';
+import { FullBookPreviewModal } from './StoryExpander/FullBookPreviewModal';
+import { StatusDisplay } from './StoryExpander/StatusDisplay';
+
+const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
+  const [draft, setDraft] = useState<string>('');
+  const [model, setModel] = useState<string>('gpt-5-mini');
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [status, setStatus] = useState<string>('');
+  const [error, setError] = useState<string>('');
+  const [rawError, setRawError] = useState<string>('');
+  const [saveStatus, setSaveStatus] = useState<string | null>(null);
+  const [saveStatusType, setSaveStatusType] = useState<'success' | 'error' | null>(null);
+  const [saveStatusTimer, setSaveStatusTimer] = useState<number | null>(null);
+  const [condensedDraft, setCondensedDraft] = useState<string>('');
+  const [keyElements, setKeyElements] = useState<KeyElements | null>(null);
+  const [summaryPrompt, setSummaryPrompt] = useState<string>('');
+  const [editingSummaryPrompt, setEditingSummaryPrompt] = useState<boolean>(false);
+  const [outlinePrompt, setOutlinePrompt] = useState<string>('');
+  const [editingOutlinePrompt, setEditingOutlinePrompt] = useState<boolean>(false);
+  const [chapters, setChapters] = useState<Chapter[]>([]);
+  const [expandedChapters, setExpandedChapters] = useState<string[]>([]);
+  const [expansionCounts, setExpansionCounts] = useState<number[]>([]);
+  const [chapterPrompts, setChapterPrompts] = useState<string[]>([]);
+  const [editingChapterPrompt, setEditingChapterPrompt] = useState<number | null>(null);
+  const [currentStep, setCurrentStep] = useState<number>(0);
+  const [currentChapterIndex, setCurrentChapterIndex] = useState<number>(0);
+  const [draftHash, setDraftHash] = useState<string>('');
+  const [chapterLoading, setChapterLoading] = useState<number | null>(null);
+  const [regenerateFromChapterIndex, setRegenerateFromChapterIndex] = useState<number | null>(null);
+  const [coverImage, setCoverImage] = useState<string>('');
+  const [bookTitle, setBookTitle] = useState<string>('');
+  const [coverPrompt, setCoverPrompt] = useState<string>('');
+  const [coverGenerationInProgress, setCoverGenerationInProgress] = useState<boolean>(false);
+  const [chapterImageLoading, setChapterImageLoading] = useState<number | null>(null);
+  const [chapterImagePromptLoading, setChapterImagePromptLoading] = useState<number | null>(null);
+  const [previewChapterIndex, setPreviewChapterIndex] = useState<number | null>(null);
+  const [isPreviewingFullBook, setIsPreviewingFullBook] = useState<boolean>(false);
+  const [globalImageStyle, setGlobalImageStyle] = useState<string>('');
+  const [editingImageStyle, setEditingImageStyle] = useState<boolean>(false);
+  const [hasInitializedImageStyle, setHasInitializedImageStyle] = useState<boolean>(false);
+  const lastGlobalImageStyleRef = useRef<string>('');
+  const pendingStyleChangeRef = useRef<boolean>(false);
+
+  // Expose saveNow method via ref
+  useImperativeHandle(ref, () => ({
+    saveNow: () => {
+      saveProgress();
+      setSaveStatus('Manually saved');
+      setSaveStatusType('success');
+      if (saveStatusTimer) {
+        window.clearTimeout(saveStatusTimer);
+      }
+      const t = window.setTimeout(() => setSaveStatus(null), 3000);
+      setSaveStatusTimer(t);
+    },
+  }));
+
+  const totalSteps = 4 + (chapters.length || 6) + expansionCounts.reduce((sum, count) => sum + count, 0);
+  const completedSteps = currentStep + (currentStep === 3 ? currentChapterIndex : 0) + expansionCounts.reduce((sum, count) => sum + count, 0);
+  const progressPercent = ((completedSteps / totalSteps) * 100).toFixed(1);
+
+  useEffect(() => {
+    const loadProgress = async () => {
+      // Load saved prompts first so they persist across refresh even without a draft
+      try {
+        const promptsRaw = localStorage.getItem(PROMPTS_STORAGE_KEY);
+        console.log('[Frontend] loadProgress: promptsRaw =', promptsRaw?.substring(0, 100));
+        if (promptsRaw) {
+          const prompts = JSON.parse(promptsRaw);
+          console.log('[Frontend] loadProgress: parsed prompts.globalImageStyle =', prompts.globalImageStyle?.substring(0, 100));
+          setSummaryPrompt(prompts.summaryPrompt || '');
+          setOutlinePrompt(prompts.outlinePrompt || '');
+          setModel(prompts.model || (model || 'gpt-5-mini'));
+          // Only set globalImageStyle if it actually exists in storage, don't use default here
+          if (prompts.globalImageStyle) {
+            lastGlobalImageStyleRef.current = prompts.globalImageStyle;
+            setGlobalImageStyle(prompts.globalImageStyle);
+            console.log('[Frontend] loadProgress: set globalImageStyle from storage');
+          } else {
+            console.log('[Frontend] loadProgress: globalImageStyle was empty in storage');
+          }
+        }
+      } catch (err) {
+        console.warn('[Frontend] loadProgress: failed to load prompts', err);
+      }
+
+      const stored = localStorage.getItem(LOCAL_STORAGE_KEY);
+      if (stored) {
+        try {
+          const progress = JSON.parse(stored);
+          // restore draft (so textarea is populated) — this avoids requiring the user to paste draft again
+          if (progress.draft) setDraft(progress.draft);
+
+          const draftToHash = progress.draft || progress.condensedDraft || '';
+          const currentHash = progress.draftHash || (draftToHash ? await hashDraft(draftToHash) : '');
+
+          setCondensedDraft(progress.condensedDraft || '');
+          setKeyElements(progress.keyElements || null);
+          setSummaryPrompt(progress.summaryPrompt || (summaryPrompt || ''));
+          setOutlinePrompt(progress.outlinePrompt || (outlinePrompt || ''));
+          setChapters(progress.chapters || []);
+          setExpandedChapters(progress.expandedChapters || []);
+          setExpansionCounts(progress.expansionCounts || []);
+          setChapterPrompts(progress.chapterPrompts || []);
+          setCurrentStep(progress.currentStep || 0);
+          setCurrentChapterIndex(progress.currentChapterIndex || 0);
+          setDraftHash(currentHash);
+          setModel(progress.model || model || 'gpt-5-mini');
+          setCoverImage(progress.coverImage || '');
+          setBookTitle(progress.bookTitle || '');
+          if (progress.coverPrompt) {
+            setCoverPrompt(progress.coverPrompt);
+          }
+          if (progress.globalImageStyle) {
+            lastGlobalImageStyleRef.current = progress.globalImageStyle;
+            setGlobalImageStyle(progress.globalImageStyle);
+            console.log('[Frontend] loadProgress: restored globalImageStyle from LOCAL_STORAGE_KEY');
+          }
+          setStatus('Loaded saved progress—draft and prompts restored.');
+        } catch (err) {
+          console.warn('[Frontend] loadProgress: failed to parse stored progress', err);
+          setStatus('Saved progress corrupted—start fresh.');
+        }
+      } else {
+        setStatus('No saved progress found—start fresh with your draft.');
+      }
+      // Mark that we've finished initial load
+      setHasInitializedImageStyle(true);
+    };
+    loadProgress();
+  }, []);
+
+  // Persist summary/outline prompts (and model) separately so prompts survive Vite refreshes
+  useEffect(() => {
+    try {
+      const toSave: any = { summaryPrompt, outlinePrompt, model };
+      // Only save globalImageStyle if it's not empty, to avoid overwriting good values with empty strings on initial mount
+      if (globalImageStyle.trim()) {
+        toSave.globalImageStyle = globalImageStyle;
+      }
+      localStorage.setItem(PROMPTS_STORAGE_KEY, JSON.stringify(toSave));
+    } catch (err) {
+      console.warn('[Frontend] Failed to save prompts to localStorage', err);
+    }
+  }, [summaryPrompt, outlinePrompt, model, globalImageStyle]);
+
+  const buildCoverPrompt = () => {
+    const basePrompt = `Professional book cover illustration in artistic style. ${condensedDraft.substring(0, 300)}. Features: ${keyElements?.characters.slice(0, 2).map(c => c.name).join(' and ') || 'main characters'}. Mood: ${keyElements?.mainStoryLines[0] || 'epic adventure'}. Rich colors, dramatic composition, suitable for novel cover art. No text, no typography, no titles, no letters. Do not depict a physical book, book cover mockup, pages, or a photo of a book; depict the scene as standalone art.`;
+    if (globalImageStyle.trim()) {
+      return `${basePrompt} Style: ${globalImageStyle}`;
+    }
+    return basePrompt;
+  };
+
+  const {
+    regenerateAllChapterPromptsWithStyle,
+    regenerateAllChapterImagesWithStyle,
+    handleRefreshImageStyle,
+    handleRegenerateChapterImage,
+    handleRegenerateChapterImagePrompt,
+    handleRegenerateAllImages,
+  } = useImageHandlers({
+    draft,
+    model,
+    condensedDraft,
+    globalImageStyle,
+    chapters,
+    expandedChapters,
+    coverImage,
+    bookTitle,
+    coverPrompt,
+    coverGenerationInProgress,
+    chapterImageLoading,
+    chapterImagePromptLoading,
+    keyElements,
+    pendingStyleChangeRef,
+    buildCoverPrompt,
+    saveProgress: (...args) => saveProgress(...args),
+    setError,
+    setRawError,
+    setStatus,
+    setChapters,
+    setCoverPrompt,
+    setCoverImage,
+    setBookTitle,
+    setGlobalImageStyle,
+    setCoverGenerationInProgress,
+    setChapterImageLoading,
+    setChapterImagePromptLoading,
+  });
+
+  // When global image style changes, ask to regenerate all chapter images
+  useEffect(() => {
+    const askAndRegenerateImages = async () => {
+      // Skip regeneration on initial mount (before loadProgress completes)
+      if (!hasInitializedImageStyle) {
+        return;
+      }
+
+      // Only run when the user explicitly saved or refreshed the style
+      if (!pendingStyleChangeRef.current) {
+        return;
+      }
+
+      // Consume the pending change so we only prompt once per save/refresh
+      pendingStyleChangeRef.current = false;
+
+      // Don't prompt while the user is typing in the style editor
+      if (editingImageStyle) {
+        return;
+      }
+
+      if (globalImageStyle === lastGlobalImageStyleRef.current) {
+        return;
+      }
+
+      // Mark this style as handled to avoid repeat prompts on refresh
+      lastGlobalImageStyleRef.current = globalImageStyle;
+
+      if (!globalImageStyle.trim() || chapters.length === 0 || expandedChapters.length === 0) {
+        return;
+      }
+
+      // Only regenerate if there are already expanded chapters with content
+      if (!expandedChapters.some(ch => ch && ch.trim())) {
+        return;
+      }
+
+      const confirmed = window.confirm(
+        `Regenerate all ${chapters.length} chapter images with the updated style?\n\nThis may take several minutes.`
+      );
+
+      if (!confirmed) {
+        console.log('[Frontend] User declined to regenerate chapter images with new style');
+        await regenerateAllChapterPromptsWithStyle();
+        return;
+      }
+
+      await regenerateAllChapterImagesWithStyle();
+    };
+
+    askAndRegenerateImages();
+  }, [globalImageStyle, hasInitializedImageStyle, editingImageStyle]); // Trigger when style changes or editor closes
+
+  const saveProgress = (
+    overrideCoverImage?: string,
+    overrideBookTitle?: string,
+    overrideCoverPrompt?: string,
+    overrideChapters?: Chapter[]
+  ) => {
+    const progress = {
+      draft,
+      draftHash,
+      condensedDraft,
+      keyElements,
+      summaryPrompt,
+      outlinePrompt,
+      chapters: overrideChapters !== undefined ? overrideChapters : chapters,
+      expandedChapters,
+      expansionCounts,
+      chapterPrompts,
+      currentStep,
+      currentChapterIndex,
+      model,
+      coverImage: overrideCoverImage !== undefined ? overrideCoverImage : coverImage,
+      bookTitle: overrideBookTitle !== undefined ? overrideBookTitle : bookTitle,
+      coverPrompt: overrideCoverPrompt !== undefined ? overrideCoverPrompt : coverPrompt,
+      globalImageStyle,
+    };
+    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(progress));
+    // Also attempt to persist to the backend as story.json (best-effort, non-blocking)
+    (async () => {
+      try {
+        const resp = await fetch('/api/save-state', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(progress),
+        });
+        if (!resp.ok) {
+          const err = await resp.json().catch(() => ({}));
+          console.warn('[Frontend] saveProgress: server save failed', err);
+          setSaveStatus('Save failed to server');
+          setSaveStatusType('error');
+        } else {
+          console.log('[Frontend] saveProgress: state saved to server');
+          setSaveStatus('Saved to server');
+          setSaveStatusType('success');
+        }
+      } catch (e: any) {
+        console.warn('[Frontend] saveProgress: network error', e);
+        setSaveStatus('Network error while saving');
+        setSaveStatusType('error');
+      } finally {
+        // clear any existing timer
+        if (saveStatusTimer) {
+          window.clearTimeout(saveStatusTimer);
+        }
+        const t = window.setTimeout(() => {
+          setSaveStatus(null);
+          setSaveStatusType(null);
+          setSaveStatusTimer(null);
+        }, 4000);
+        setSaveStatusTimer(t as unknown as number);
+      }
+    })();
+  };
+
+  const clearProgress = () => {
+    localStorage.removeItem(LOCAL_STORAGE_KEY);
+    setCondensedDraft('');
+    setKeyElements(null);
+    setSummaryPrompt('');
+    setChapters([]);
+    setExpandedChapters([]);
+    setExpansionCounts([]);
+    setChapterPrompts([]);
+    setCurrentStep(0);
+    setCurrentChapterIndex(0);
+    setDraftHash('');
+    setCoverImage('');
+    setBookTitle('');
+    setStatus('Progress cleared—start over.');
+    setError('');
+    setRawError('');
+  };
+
+  const regenerateSummary = async () => {
+    if (isLoading) return;
+    setIsLoading(true);
+    setError('');
+    setRawError('');
+    setStatus('Regenerating summary with new prompt...');
+    try {
+      const chunks = chunkText(draft);
+      let condensed = '';
+      const openaiApiKey = getStoredApiKey();
+      for (let i = 0; i < chunks.length; i++) {
+        console.log(`[Frontend] Processing chunk ${i + 1}/${chunks.length}`);
+        const data = await summarizeDraft({
+          draft: chunks[i],
+          model,
+          chunkIndex: i,
+          totalChunks: chunks.length,
+          customPrompt: summaryPrompt,
+          openaiApiKey,
+        });
+        condensed += data.condensedChunk + ' ';
+      }
+      setCondensedDraft(condensed.trim());
+      setKeyElements(null);
+      setChapters([]);
+      setExpandedChapters([]);
+      setExpansionCounts([]);
+      setChapterPrompts([]);
+      setCurrentStep(0);
+      setCurrentChapterIndex(0);
+      setStatus('Summary regenerated—proceeding to extract key elements.');
+      saveProgress();
+    } catch (err: any) {
+      setError(`Regeneration failed: ${err.message || 'Unknown error'}. Try again.`);
+      setRawError(err.rawResponse || '');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const {
+    regenerateFromChapterPrompt,
+    processStep,
+    handleRegenerateOutline,
+    handleExpandMore,
+    handleRegenerateChapter,
+  } = useStoryFlowHandlers({
+    isLoading,
+    currentStep,
+    currentChapterIndex,
+    chapterLoading,
+    draft,
+    condensedDraft,
+    summaryPrompt,
+    outlinePrompt,
+    model,
+    globalImageStyle,
+    keyElements,
+    chapters,
+    expandedChapters,
+    expansionCounts,
+    chapterPrompts,
+    setIsLoading,
+    setError,
+    setRawError,
+    setStatus,
+    setCondensedDraft,
+    setKeyElements,
+    setChapters,
+    setExpandedChapters,
+    setExpansionCounts,
+    setChapterPrompts,
+    setCurrentStep,
+    setCurrentChapterIndex,
+    setChapterLoading,
+    saveProgress,
+    onAllChaptersExpanded: () => generateCoverImage(),
+  });
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!draft.trim()) {
+      setError('Draft cannot be empty.');
+      return;
+    }
+    const newHash = await hashDraft(draft);
+    setDraftHash(newHash);
+
+    // Generate custom image style from draft if starting fresh
+    if (currentStep === 0 && !condensedDraft) {
+      setStatus('Analyzing draft to generate custom image style...');
+      try {
+        const openaiApiKey = getStoredApiKey();
+        const styleData = await refreshImageStyle({
+          draft: draft.substring(0, 2000),
+          model,
+          apiKey: openaiApiKey,
+        });
+
+        if (styleData.imageStyle) {
+          setGlobalImageStyle(styleData.imageStyle);
+          console.log('[Frontend] Generated custom image style:', styleData.imageStyle);
+        } else {
+          console.warn('Failed to generate custom image style, using default');
+        }
+      } catch (err) {
+        console.warn('Error generating image style:', err);
+      }
+
+      setStatus('Starting fresh: Summarizing draft...');
+      processStep();
+    } else {
+      setStatus('Resuming from saved progress...');
+      processStep();
+    }
+  };
+
+  const handleContinue = () => {
+    if (isLoading) return;
+    processStep();
+  };
+
+  const handleEditSummaryPrompt = () => {
+    setEditingSummaryPrompt(true);
+  };
+
+  const handleSaveSummaryPrompt = () => {
+    setEditingSummaryPrompt(false);
+    if (currentStep > 0 && condensedDraft) {
+      setStatus('Summary prompt updated—click "Regenerate Summary" to apply or continue to propagate to outline.');
+    }
+    saveProgress();
+  };
+
+  const handleEditChapterPrompt = (index: number) => {
+    setEditingChapterPrompt(index);
+  };
+
+  const handleSaveChapterPrompt = (index: number) => {
+    setEditingChapterPrompt(null);
+    if (expandedChapters[index]) {
+      setStatus(`Prompt for chapter ${index + 1} updated—use "Expand More" to apply.`);
+    }
+    saveProgress();
+    // Trigger outline regeneration for subsequent chapters to maintain continuity
+    (async () => {
+      try {
+        await regenerateFromChapterPrompt(index);
+      } catch (err: any) {
+        console.warn('[Frontend] regenerateFromChapterPrompt failed', err);
+      }
+    })();
+  };
+
+  const handleEditOutlinePrompt = () => {
+    setEditingOutlinePrompt(true);
+  };
+
+  const handleSaveOutlinePrompt = () => {
+    setEditingOutlinePrompt(false);
+    if (currentStep > 1 && condensedDraft) {
+      setStatus('Outline prompt updated—click "Regenerate Outline" to apply.');
+    }
+    saveProgress();
+  };
+
+  const handleRegenerateExpandedFromChapter = async (fromChapterIndex: number) => {
+    if (chapterLoading !== null) return;
+
+    const confirmed = window.confirm(
+      `Regenerate expanded chapters starting from Chapter ${fromChapterIndex + 1} ("${chapters[fromChapterIndex]?.title}")?\n\nChapters 1-${fromChapterIndex} will be preserved.\nChapters ${fromChapterIndex + 1}-${chapters.length} will be regenerated.`
+    );
+
+    if (!confirmed) return;
+
+    // Clear expansion data for chapters being regenerated, but PRESERVE chapter custom prompts
+    const newExpanded = [...expandedChapters];
+    const newCounts = [...expansionCounts];
+    for (let i = fromChapterIndex; i < chapters.length; i++) {
+      newExpanded[i] = '';
+      newCounts[i] = 0;
+      // NOTE: NOT clearing chapterPrompts[i] - they are preserved for re-expansion
+    }
+
+    setExpandedChapters(newExpanded);
+    setExpansionCounts(newCounts);
+    // NOTE: chapterPrompts are preserved (not cleared)
+    setError('');
+    setRawError('');
+    setStatus(`Regenerating expanded chapters from Chapter ${fromChapterIndex + 1}...`);
+    setCurrentChapterIndex(fromChapterIndex);
+    setCurrentStep(3);
+    saveProgress();
+  };
+
+  useEffect(() => {
+    console.log(`[Frontend] useEffect triggered: step=${currentStep}, chapterIndex=${currentChapterIndex}, chapters=${chapters.length}, loading=${isLoading}`);
+    if (isLoading || (currentStep === 3 && currentChapterIndex >= chapters.length)) return;
+    if (currentStep > 0 || condensedDraft) {
+      processStep();
+    }
+  }, [currentStep, currentChapterIndex, chapters.length, condensedDraft]);
+
+  const fullStory = chapters.map((ch, idx) => `### ${ch.title}\n\n${expandedChapters[idx] || '(Pending)'}\n\n---`).join('\n');
+
+  // Auto-generate cover image when all chapters are complete
+  useEffect(() => {
+    if (chapters.length > 0 &&
+        expandedChapters.every(ch => ch) &&
+        !coverImage &&
+        !coverGenerationInProgress &&
+        currentStep === 3 &&
+        currentChapterIndex >= chapters.length) {
+      generateCoverImage();
+    }
+  }, [chapters.length, expandedChapters, coverImage, coverGenerationInProgress, currentStep, currentChapterIndex]);
+
+  // Generate cover image when all chapters are complete
+  const generateCoverImage = async (force = false) => {
+    if (coverGenerationInProgress && !force) return;
+    if (!chapters.length || !expandedChapters.every(ch => ch)) return;
+
+    try {
+      if (!coverGenerationInProgress) {
+        setCoverGenerationInProgress(true);
+      }
+      const openaiApiKey = getStoredApiKey();
+      setStatus('Generating book title and cover image...');
+
+      // First, generate a short book title
+      const titleData = await generateBookTitle({
+        summary: condensedDraft,
+        characters: keyElements?.characters.map(c => c.name).join(', ') || 'Various',
+        themes: keyElements?.mainStoryLines.join(', ') || 'Adventure',
+        model,
+        apiKey: openaiApiKey,
+      });
+      let bookTitle = titleData.title || 'Novel';
+      setBookTitle(bookTitle);
+      console.log('[Frontend] Generated book title:', bookTitle);
+
+      setStatus(`Generating cover image with title: "${bookTitle}"...`);
+
+      // Generate cover image prompt (artistic illustration, not text)
+      const coverPromptText = buildCoverPrompt();
+      setCoverPrompt(coverPromptText);
+
+      const imageData = await generateImage({
+        imagePrompt: coverPromptText,
+        title: bookTitle,
+        summary: `Book cover for: ${bookTitle}`,
+        imageType: 'cover',
+        globalImageStyle,
+        apiKey: openaiApiKey,
+      });
+      if (imageData.imageUrl) {
+        setCoverImage(imageData.imageUrl);
+        setStatus(`Cover image generated with title: "${bookTitle}"!`);
+        saveProgress(imageData.imageUrl, bookTitle, coverPromptText);
+      } else if (imageData.error) {
+        setStatus('Cover generation skipped (content filter)');
+      }
+    } catch (err) {
+      console.error('Failed to generate cover image:', err);
+    } finally {
+      setCoverGenerationInProgress(false);
+    }
+  };
+
+  // Wrapper for chapter preview with local state
+  const handleOpenChapterPreview = async (idx: number) => {
+    await openChapterPreviewInNewTab(idx, chapters[idx], expandedChapters[idx], (msg) => setError(msg));
+  };
+
+  // Wrapper for full book preview with local state
+  const handleOpenFullBookPreview = async () => {
+    await openFullBookPreviewInNewTab(chapters, expandedChapters, bookTitle, coverImage, setError, setStatus);
+  };
+
+  // Wrapper for copy with local state
+  const handleCopyWithImages = async (htmlContent: string, imageUrls: string[]) => {
+    await copyContentToClipboard(htmlContent, imageUrls, setStatus, setError);
+  };
+
+  return (
+    <div className="space-y-6">
+      <form onSubmit={handleSubmit} className="bg-white p-6 rounded-lg shadow-md">
+        <label className="block text-sm font-medium text-gray-700 mb-2">
+          Paste Your Initial Draft (90 pages? Epic!):
+        </label>
+        <textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder="Enter your story draft..."
+          className="w-full h-40 p-3 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 resize-vertical"
+          required
+        />
+        <div className="mt-4 flex items-center space-x-2">
+          <label htmlFor="model" className="text-sm text-gray-600">Select Model:</label>
+          <select
+            id="model"
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            className="border border-gray-300 rounded-md px-3 py-1 text-sm"
+          >
+            {MODEL_OPTIONS.map((option: any) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* Global Image Style Editor */}
+        <div className="mt-4 p-4 bg-blue-50 rounded-md border border-blue-200">
+          <div className="flex items-center justify-between mb-2">
+            <div>
+              <label className="text-sm font-medium text-gray-700">Image Generation Style:</label>
+              <p className="text-xs text-gray-500 mt-1">Auto-generated from your draft • Adjust if needed</p>
+            </div>
+            {!editingImageStyle && (
+              <div className="flex gap-2 ml-4">
+                {globalImageStyle && (
+                  <button
+                    type="button"
+                    onClick={handleRefreshImageStyle}
+                    disabled={isLoading}
+                    className="p-1 text-blue-600 hover:text-blue-800 hover:bg-blue-100 rounded disabled:opacity-50"
+                    title="Refresh style from draft"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                  </button>
+                )}
+                {globalImageStyle && (
+                  <button
+                    type="button"
+                    onClick={() => setEditingImageStyle(true)}
+                    className="text-sm text-blue-600 hover:text-blue-800 font-medium whitespace-nowrap"
+                  >
+                    ✎ Edit
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+          {editingImageStyle ? (
+            <div>
+              <textarea
+                value={globalImageStyle}
+                onChange={(e) => setGlobalImageStyle(e.target.value)}
+                placeholder="Enter image style description (e.g., 'Digital illustration, cinematic lighting, dramatic atmosphere...')"
+                className="w-full h-24 p-2 border border-gray-300 rounded-md text-sm resize-vertical"
+              />
+              <div className="mt-2 flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    pendingStyleChangeRef.current = true;
+                    setEditingImageStyle(false);
+                    saveProgress();
+                  }}
+                  className="px-3 py-1 bg-blue-600 text-white rounded-md hover:bg-blue-700 text-sm"
+                >
+                  Save Style
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    pendingStyleChangeRef.current = true;
+                    setGlobalImageStyle('Digital illustration, cinematic lighting, dramatic atmosphere, rich color palette, professional fantasy art style, detailed and atmospheric, 4K quality, painterly aesthetic with fine brushwork, moody and immersive environment, warm and cool color contrast, professional concept art');
+                    setEditingImageStyle(false);
+                    saveProgress();
+                  }}
+                  className="px-3 py-1 bg-gray-400 text-white rounded-md hover:bg-gray-500 text-sm"
+                >
+                  Reset to Default
+                </button>
+              </div>
+            </div>
+          ) : (
+            <p className="text-xs text-gray-700 italic line-clamp-3 bg-white p-2 rounded border border-gray-200">{globalImageStyle || 'Paste your draft and click "Start Expansion" to auto-generate a style, or set it manually'}</p>
+          )}
+        </div>
+
+        <div className="mt-4 flex space-x-4">
+          <button
+            type="submit"
+            disabled={isLoading || !draft.trim()}
+            className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50"
+          >
+            {currentStep > 0 ? 'Resume Expansion' : 'Start Expansion'}
+          </button>
+          <button
+            type="button"
+            onClick={handleContinue}
+            disabled={isLoading || (currentStep === 3 && currentChapterIndex >= chapters.length)}
+            className="px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50"
+          >
+            Continue
+          </button>
+          <button
+            type="button"
+            onClick={clearProgress}
+            className="px-6 py-2 bg-red-600 text-white rounded-md hover:bg-red-700"
+          >
+            Clear Progress
+          </button>
+        </div>
+      </form>
+
+      <div className="bg-gray-200 rounded-full h-4">
+        <div className="bg-blue-600 h-4 rounded-full" style={{ width: `${progressPercent}%` }}></div>
+      </div>
+      <p className="text-sm text-gray-600">Progress: {completedSteps}/{totalSteps} steps ({progressPercent}%)</p>
+
+      {status && <div className="bg-blue-100 border border-blue-400 text-blue-700 px-4 py-3 rounded">{status}</div>}
+      {error && (
+        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded">
+          <p>{error}</p>
+          {rawError && (
+            <details className="mt-2">
+              <summary className="cursor-pointer text-sm">Raw Error Response</summary>
+              <pre className="text-xs bg-gray-100 p-2 rounded mt-1">{rawError}</pre>
+            </details>
+          )}
+        </div>
+      )}
+      {saveStatus && (
+        <div className={`px-4 py-2 rounded ${saveStatusType === 'success' ? 'bg-green-100 border border-green-400 text-green-700' : 'bg-yellow-100 border border-yellow-400 text-yellow-700'}`}>
+          {saveStatus}
+        </div>
+      )}
+
+      {condensedDraft && (
+        <details open={currentStep === 1} className="bg-white p-6 rounded-lg shadow-md">
+          <summary className="cursor-pointer font-medium text-blue-600 mb-2">Step 1: Condensed Draft</summary>
+          <div className="flex justify-between items-center mb-2">
+            <h3 className="font-semibold text-gray-800">Custom Prompt</h3>
+            <div className="flex space-x-2">
+              {!editingSummaryPrompt && (
+                <button onClick={handleEditSummaryPrompt} className="text-blue-600 hover:text-blue-800">
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                  </svg>
+                </button>
+              )}
+              {condensedDraft && (
+                <button
+                  onClick={regenerateSummary}
+                  disabled={isLoading}
+                  className="px-4 py-1 bg-yellow-600 text-white rounded-md hover:bg-yellow-700 disabled:opacity-50"
+                >
+                  Regenerate Summary
+                </button>
+              )}
+            </div>
+          </div>
+          {editingSummaryPrompt ? (
+            <div className="mb-4">
+              <textarea
+                value={summaryPrompt}
+                onChange={(e) => setSummaryPrompt(e.target.value)}
+                placeholder="Enter custom prompt for summarization (e.g., 'Character A is female, Character B is male, emphasize dramatic themes')"
+                className="w-full p-2 border border-gray-300 rounded-md"
+              />
+              <button
+                onClick={handleSaveSummaryPrompt}
+                className="mt-2 px-4 py-1 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+              >
+                Save Prompt
+              </button>
+            </div>
+          ) : (
+            <p className="text-sm text-gray-600 mb-4">{summaryPrompt || 'No custom prompt set'}</p>
+          )}
+          <div className="prose max-w-none text-gray-700">
+            <p>{condensedDraft}</p>
+          </div>
+        </details>
+      )}
+
+      {keyElements && (
+        <details open={currentStep === 2} className="bg-white p-6 rounded-lg shadow-md">
+          <summary className="cursor-pointer font-medium text-blue-600 mb-2">Step 2: Key Elements</summary>
+          <div className="space-y-4">
+            <h3 className="font-semibold text-gray-800">Characters</h3>
+            <ul className="list-disc pl-5">
+              {keyElements.characters.map((char, idx) => (
+                <li key={idx}>
+                  {char.name}: {char.gender}, {char.role}, {char.traits}
+                  {char.affiliations ? `, affiliated with ${char.affiliations}` : ''}
+                </li>
+              ))}
+            </ul>
+            <h3 className="font-semibold text-gray-800">Key Events</h3>
+            <ul className="list-disc pl-5">
+              {keyElements.keyEvents.map((event, idx) => <li key={idx}>{event}</li>)}
+            </ul>
+            <h3 className="font-semibold text-gray-800">Timeline</h3>
+            <ul className="list-disc pl-5">
+              {keyElements.timeline.map((time, idx) => <li key={idx}>{time}</li>)}
+            </ul>
+            <h3 className="font-semibold text-gray-800">Unique Details</h3>
+            <ul className="list-disc pl-5">
+              {keyElements.uniqueDetails.map((detail, idx) => <li key={idx}>{detail}</li>)}
+            </ul>
+            <h3 className="font-semibold text-gray-800">Main Story Lines</h3>
+            <ul className="list-disc pl-5">
+              {keyElements.mainStoryLines.map((line, idx) => <li key={idx}>{line}</li>)}
+            </ul>
+          </div>
+        </details>
+      )}
+
+      {chapters.length > 0 && (
+        <details open={currentStep === 3} className="bg-white p-6 rounded-lg shadow-md">
+          <summary className="cursor-pointer font-medium text-blue-600 mb-2">Step 3: Chapter Outlines</summary>
+          <div className="flex justify-between items-center mb-4">
+            <div>
+              <h4 className="font-semibold text-gray-800">Outline Custom Prompt</h4>
+              {!editingOutlinePrompt ? (
+                <div className="flex items-center space-x-2">
+                  <p className="text-sm text-gray-600 italic mr-4">{outlinePrompt || summaryPrompt || 'No outline prompt set'}</p>
+                  <button onClick={handleEditOutlinePrompt} className="text-blue-600 hover:text-blue-800">Edit</button>
+                </div>
+              ) : (
+                <div>
+                  <textarea
+                    value={outlinePrompt}
+                    onChange={(e) => setOutlinePrompt(e.target.value)}
+                    placeholder="Enter custom prompt for outline generation (e.g., 'Focus on political intrigue')"
+                    className="w-full p-2 border border-gray-300 rounded-md mb-2"
+                  />
+                  <button onClick={handleSaveOutlinePrompt} className="px-3 py-1 bg-blue-600 text-white rounded-md">Save Prompt</button>
+                </div>
+              )}
+            </div>
+            <div>
+              <button
+                onClick={handleRegenerateOutline}
+                disabled={isLoading}
+                className="px-4 py-1 bg-yellow-600 text-white rounded-md hover:bg-yellow-700 disabled:opacity-50"
+              >
+                {isLoading ? 'Regenerating...' : 'Regenerate Outline'}
+              </button>
+            </div>
+          </div>
+          <ul className="space-y-4 mt-4">
+            {chapters.map((chapter, idx) => (
+              <li key={idx} className="border-l-4 border-blue-500 pl-4">
+                <div className="flex justify-between items-center">
+                  <h3 className="font-semibold text-gray-800">{chapter.title}</h3>
+                  <button onClick={() => handleEditChapterPrompt(idx)} className="text-blue-600 hover:text-blue-800">
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                    </svg>
+                  </button>
+                </div>
+                {editingChapterPrompt === idx ? (
+                  <div className="mb-4">
+                    <textarea
+                      value={chapterPrompts[idx] || ''}
+                      onChange={(e) => {
+                        const newPrompts = [...chapterPrompts];
+                        newPrompts[idx] = e.target.value;
+                        setChapterPrompts(newPrompts);
+                      }}
+                      placeholder="Enter custom prompt for this chapter (e.g., 'Make Character A the villain, focus on betrayal')"
+                      className="w-full p-2 border border-gray-300 rounded-md"
+                    />
+                    <button
+                      onClick={() => handleSaveChapterPrompt(idx)}
+                      className="mt-2 px-4 py-1 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+                    >
+                      Save Prompt
+                    </button>
+                  </div>
+                ) : (
+                  <p className="text-sm text-gray-600 italic mb-2">Custom Prompt: {chapterPrompts[idx] || 'None'}</p>
+                )}
+                <p className="text-sm text-gray-600 italic">Summary: {chapter.summary}</p>
+                <h4 className="font-medium">Key Events</h4>
+                <ul className="list-disc pl-5">
+                  {Array.isArray(chapter.keyEvents) && chapter.keyEvents.length > 0 ? (
+                    chapter.keyEvents.map((event, eIdx) => <li key={eIdx}>{event}</li>)
+                  ) : (
+                    <li>No key events available.</li>
+                  )}
+                </ul>
+                <h4 className="font-medium">Character Traits</h4>
+                <ul className="list-disc pl-5">
+                  {Array.isArray(chapter.characterTraits) && chapter.characterTraits.length > 0 ? (
+                    chapter.characterTraits.map((trait, tIdx) => <li key={tIdx}>{trait}</li>)
+                  ) : (
+                    <li>No character traits available.</li>
+                  )}
+                </ul>
+                <h4 className="font-medium">Timeline</h4>
+                <p>{chapter.timeline || 'No timeline available.'}</p>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+
+      {expandedChapters.some(ch => ch) && (
+        <details open={currentStep === 3} className="bg-white p-6 rounded-lg shadow-md">
+          <summary className="cursor-pointer font-medium text-blue-600 mb-2">Step 4: Expanded Chapters</summary>
+          <div className="space-y-6">
+            {chapters.map((chapter, idx) => (
+              expandedChapters[idx] && (
+                <div key={idx} className="border-l-4 border-blue-500 pl-4">
+                  <div className="flex justify-between items-center">
+                    <h3 className="font-semibold text-gray-800">{chapter.title} {expansionCounts[idx] > 0 && ` (Expanded ${expansionCounts[idx]}x)`}</h3>
+                    <div className="flex space-x-2">
+                      <button onClick={() => handleEditChapterPrompt(idx)} className="text-blue-600 hover:text-blue-800">
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                        </svg>
+                      </button>
+                      <button
+                        onClick={() => handleExpandMore(idx)}
+                        disabled={chapterLoading !== null}
+                        className="px-4 py-1 bg-purple-600 text-white rounded-md hover:bg-purple-700 disabled:opacity-50"
+                      >
+                        {chapterLoading === idx ? 'Expanding...' : 'Expand More'}
+                      </button>
+                      <button
+                        onClick={() => handleRegenerateChapter(idx)}
+                        disabled={chapterLoading !== null}
+                        className="px-4 py-1 bg-yellow-600 text-white rounded-md hover:bg-yellow-700 disabled:opacity-50 ml-2"
+                      >
+                        {chapterLoading === idx ? 'Regenerating...' : 'Regenerate'}
+                      </button>
+                      {idx < chapters.length - 1 && (
+                        <button
+                          onClick={() => handleRegenerateExpandedFromChapter(idx + 1)}
+                          disabled={chapterLoading !== null}
+                          className="px-4 py-1 bg-orange-600 text-white rounded-md hover:bg-orange-700 disabled:opacity-50 ml-2"
+                          title="Regenerate expanded chapters from this chapter onwards"
+                        >
+                          Regen From
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  {editingChapterPrompt === idx ? (
+                    <div className="mb-4">
+                      <textarea
+                        value={chapterPrompts[idx] || ''}
+                        onChange={(e) => {
+                          const newPrompts = [...chapterPrompts];
+                          newPrompts[idx] = e.target.value;
+                          setChapterPrompts(newPrompts);
+                        }}
+                        placeholder="Enter custom prompt for this chapter (e.g., 'Make Character A the villain, focus on betrayal')"
+                        className="w-full p-2 border border-gray-300 rounded-md"
+                      />
+                      <button
+                        onClick={() => handleSaveChapterPrompt(idx)}
+                        className="mt-2 px-4 py-1 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+                      >
+                        Save Prompt
+                      </button>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-gray-600 italic mb-2">Custom Prompt: {chapterPrompts[idx] || 'None'}</p>
+                  )}
+                  <p className="text-sm text-gray-600 italic mb-2">Summary: {chapter.summary}</p>
+                  {chapter.imageUrl && (
+                    <div className="my-4">
+                      <img
+                        src={chapter.imageUrl}
+                        alt={`Illustration for ${chapter.title}`}
+                        className="w-full max-w-2xl rounded-lg shadow-md"
+                      />
+                      <div className="mt-2 flex items-center gap-3">
+                        <button
+                          onClick={() => handleRegenerateChapterImage(idx)}
+                          disabled={chapterImageLoading !== null}
+                          className="px-3 py-1 bg-sky-600 text-white rounded-md hover:bg-sky-700 disabled:opacity-50"
+                        >
+                          {chapterImageLoading === idx ? 'Regenerating...' : 'Regenerate Image'}
+                        </button>
+                        <button
+                          onClick={() => handleRegenerateChapterImagePrompt(idx)}
+                          disabled={chapterImagePromptLoading !== null}
+                          className="px-2 py-1 text-xs border border-gray-300 rounded-md text-gray-600 hover:text-gray-800 hover:border-gray-400 disabled:opacity-50"
+                        >
+                          {chapterImagePromptLoading === idx ? 'Regenerating...' : 'Regen Prompt'}
+                        </button>
+                        {chapter.imagePrompt && (
+                          <p className="text-xs text-gray-500 italic">Image prompt: {chapter.imagePrompt}</p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  <div className="prose max-w-none text-gray-700">
+                    <p>{expandedChapters[idx]}</p>
+                  </div>
+                </div>
+              )
+            ))}
+          </div>
+        </details>
+      )}
+
+      {fullStory && chapters.some((_, idx) => expandedChapters[idx]) && (
+        <details open={currentStep === 3 && currentChapterIndex >= chapters.length} className="bg-white p-8 rounded-lg shadow-md">
+          <summary className="cursor-pointer font-medium text-blue-600 mb-4">Final Expanded Story (Book Format)</summary>
+
+          {/* Action Buttons */}
+          <div className="flex flex-wrap gap-3 mb-4 no-print">
+            {expandedChapters.every(ch => ch) && (
+              <button
+                onClick={() => {
+                  setCoverGenerationInProgress(true);
+                  setCoverImage('');
+                  setTimeout(() => generateCoverImage(true), 100);
+                }}
+                className="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700"
+              >
+                {coverImage ? 'Regenerate' : 'Generate'} Cover Image
+              </button>
+            )}
+            {expandedChapters.every(ch => ch) && (
+              <button
+                onClick={() => handleRegenerateAllImages()}
+                disabled={chapterImageLoading !== null || coverGenerationInProgress}
+                className="px-4 py-2 bg-orange-600 text-white rounded-md hover:bg-orange-700 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {coverGenerationInProgress || chapterImageLoading !== null ? 'Regenerating...' : 'Regenerate All Images'}
+              </button>
+            )}
+            {expandedChapters.every(ch => ch) && (
+              <button
+                onClick={() => setIsPreviewingFullBook(true)}
+                className="px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700"
+              >
+                Preview Book
+              </button>
+            )}
+            {expandedChapters.every(ch => ch) && (
+              <button
+                onClick={() => {
+                  const chaptersHtml = chapters.map((ch, idx) => `
+                    <h2>Chapter ${idx + 1}: ${ch.title}</h2>
+                    ${ch.imageUrl ? `<img src="${ch.imageUrl}" alt="Chapter ${idx + 1}: ${ch.title}">` : ''}
+                    ${expandedChapters[idx]?.split('\n\n').map(para => `<p>${para}</p>`).join('') || ''}
+                  `).join('');
+
+                  const toc = chapters.map((ch, idx) => `<li>Chapter ${idx + 1}: ${ch.title}</li>`).join('');
+
+                  const htmlContent = `
+                    <h1>${bookTitle || 'Novel'}</h1>
+                    <p>${chapters.length} Chapters</p>
+                    <h2>Table of Contents</h2>
+                    <ul>${toc}</ul>
+                    ${chaptersHtml}
+                    <p>~ The End ~</p>
+                  `;
+
+                  const imageUrls = [
+                    ...(coverImage ? [coverImage] : []),
+                    ...chapters.map(ch => ch.imageUrl).filter((url): url is string => !!url)
+                  ];
+
+                  handleCopyWithImages(htmlContent, imageUrls);
+                }}
+                className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700"
+              >
+                📋 Copy All (with Images)
+              </button>
+            )}
+          </div>
+
+          {/* Book-style formatted content */}
+          <div className="book-content max-w-4xl mx-auto bg-white">
+            {/* Cover Page */}
+            <div className="mb-12 text-center page-break">
+              {coverImage ? (
+                <div className="relative inline-block max-w-2xl mx-auto mb-6">
+                  <img
+                    src={coverImage}
+                    alt="Book Cover"
+                    className="w-full rounded-lg shadow-2xl"
+                  />
+                  {/* Title overlay on cover image */}
+                  <div className="absolute inset-0 flex items-center justify-center p-8">
+                    <h1
+                      className="text-5xl md:text-6xl font-bold text-white text-center"
+                      style={{
+                        textShadow: '0 4px 12px rgba(0,0,0,0.9), 0 2px 4px rgba(0,0,0,0.8), 0 0 20px rgba(0,0,0,0.7)',
+                        lineHeight: '1.2'
+                      }}
+                    >
+                      {bookTitle || 'Complete Story'}
+                    </h1>
+                  </div>
+                </div>
+              ) : (
+                <h1 className="text-4xl font-bold text-gray-900 mb-2">{bookTitle || 'Complete Story'}</h1>
+              )}
+              <p className="text-lg text-gray-600">{chapters.length} Chapters</p>
+            </div>
+
+            {/* Table of Contents */}
+            <div className="mb-12 page-break">
+              <h2 className="text-3xl font-bold text-gray-900 mb-6 border-b-2 border-gray-300 pb-2">Table of Contents</h2>
+              <ul className="space-y-2">
+                {chapters.map((ch, idx) => (
+                  <li key={idx} className="text-gray-700">
+                    <span className="font-semibold">Chapter {idx + 1}:</span> {ch.title}
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            {/* Chapters */}
+            {chapters.map((ch, idx) => (
+              expandedChapters[idx] && (
+                <div key={idx} className="mb-16 page-break-before">
+                  <div className="mb-6 avoid-break">
+                    <p className="text-sm text-gray-500 uppercase tracking-wide mb-2">Chapter {idx + 1}</p>
+                    <h2 className="text-3xl font-bold text-gray-900 mb-6">{ch.title}</h2>
+                  </div>
+
+                  {/* Chapter Image */}
+                  {ch.imageUrl && (
+                    <div className="mb-6 avoid-break">
+                      <img
+                        src={ch.imageUrl}
+                        alt={`Chapter ${idx + 1}: ${ch.title}`}
+                        className="w-full rounded-lg shadow-lg"
+                      />
+                      <div className="mt-2 flex flex-wrap items-center gap-3 no-print">
+                        <button
+                          onClick={() => handleRegenerateChapterImage(idx)}
+                          disabled={chapterImageLoading !== null}
+                          className="px-3 py-1 bg-sky-600 text-white rounded-md hover:bg-sky-700 disabled:opacity-50"
+                        >
+                          {chapterImageLoading === idx ? 'Regenerating...' : 'Regenerate Image'}
+                        </button>
+                        <button
+                          onClick={() => handleRegenerateChapterImagePrompt(idx)}
+                          disabled={chapterImagePromptLoading !== null}
+                          className="px-2 py-1 text-xs border border-gray-300 rounded-md text-gray-600 hover:text-gray-800 hover:border-gray-400 disabled:opacity-50"
+                        >
+                          {chapterImagePromptLoading === idx ? 'Regenerating...' : 'Regen Prompt'}
+                        </button>
+                        <button
+                          onClick={() => setPreviewChapterIndex(idx)}
+                          className="px-2 py-1 text-xs border border-purple-300 rounded-md text-purple-600 hover:text-purple-800 hover:border-purple-400 hover:bg-purple-50"
+                        >
+                          Preview
+                        </button>
+                        {ch.imagePrompt && (
+                          <p className="text-xs text-gray-500 italic">Image prompt: {ch.imagePrompt}</p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Chapter Content */}
+                  <div className="prose prose-lg max-w-none leading-relaxed text-gray-800">
+                    {expandedChapters[idx].split('\n\n').map((paragraph, pIdx) => (
+                      <p key={pIdx} className="mb-4 text-justify indent-8">{paragraph}</p>
+                    ))}
+                  </div>
+
+                  {idx < chapters.length - 1 && (
+                    <div className="mt-8 border-b-2 border-gray-200 no-print"></div>
+                  )}
+                </div>
+              )
+            ))}
+
+            {/* End Page */}
+            <div className="text-center py-12 page-break-before">
+              <p className="text-2xl font-serif text-gray-600">~ The End ~</p>
+            </div>
+          </div>
+        </details>
+      )}
+
+      {/* Chapter Preview Modal */}
+      {previewChapterIndex !== null && chapters[previewChapterIndex] && expandedChapters[previewChapterIndex] && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 overflow-y-auto">
+          <div className="bg-white rounded-lg shadow-2xl w-full max-w-3xl my-8">
+            {/* Close Button */}
+            <div className="sticky top-0 flex justify-between items-center p-6 bg-white border-b border-gray-200 rounded-t-lg">
+              <h2 className="text-2xl font-bold text-gray-800">{chapters[previewChapterIndex].title}</h2>
+              <button
+                onClick={() => setPreviewChapterIndex(null)}
+                className="text-gray-500 hover:text-gray-700 text-2xl font-bold w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Preview Content */}
+            <div className="p-8 max-h-[70vh] overflow-y-auto">
+              {/* Chapter Image */}
+              {chapters[previewChapterIndex].imageUrl && (
+                <div className="mb-6">
+                  <img
+                    src={chapters[previewChapterIndex].imageUrl}
+                    alt={`Chapter ${previewChapterIndex + 1}: ${chapters[previewChapterIndex].title}`}
+                    className="w-full rounded-lg shadow-md"
+                  />
+                </div>
+              )}
+
+              {/* Chapter Text */}
+              <div className="prose prose-lg max-w-none leading-relaxed text-gray-800">
+                {expandedChapters[previewChapterIndex].split('\n\n').map((paragraph, pIdx) => (
+                  <p key={pIdx} className="mb-4 text-justify indent-8 leading-loose">{paragraph}</p>
+                ))}
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="sticky bottom-0 p-6 bg-gray-50 border-t border-gray-200 rounded-b-lg flex justify-end gap-3">
+              <button
+                onClick={() => {
+                  const chapterContent = expandedChapters[previewChapterIndex];
+                  const chapter = chapters[previewChapterIndex];
+                  const htmlContent = `
+                    <h2>${chapter.title}</h2>
+                    ${chapter.imageUrl ? `<img src="${chapter.imageUrl}" alt="Chapter ${previewChapterIndex + 1}: ${chapter.title}">` : ''}
+                    ${chapterContent.split('\n\n').map(para => `<p>${para}</p>`).join('')}
+                  `;
+                  const imageUrls = chapter.imageUrl ? [chapter.imageUrl] : [];
+                  handleCopyWithImages(htmlContent, imageUrls);
+                }}
+                className="px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700"
+              >
+                📋 Copy (with Images)
+              </button>
+              <button
+                onClick={() => handleOpenChapterPreview(previewChapterIndex)}
+                className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+              >
+                Open in New Tab
+              </button>
+              <button
+                onClick={() => setPreviewChapterIndex(null)}
+                className="px-6 py-2 bg-gray-600 text-white rounded-md hover:bg-gray-700"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Full Book Preview Modal */}
+      {isPreviewingFullBook && chapters.length > 0 && expandedChapters.some(ch => ch) && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4 overflow-y-auto">
+          <div className="bg-white rounded-lg shadow-2xl w-full max-w-4xl my-8">
+            {/* Close Button */}
+            <div className="sticky top-0 flex justify-between items-center p-6 bg-white border-b border-gray-200 rounded-t-lg">
+              <h2 className="text-2xl font-bold text-gray-800">{bookTitle || 'Preview Book'}</h2>
+              <button
+                onClick={() => setIsPreviewingFullBook(false)}
+                className="text-gray-500 hover:text-gray-700 text-2xl font-bold w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Preview Content */}
+            <div className="p-8 max-h-[80vh] overflow-y-auto">
+              {/* Cover Page */}
+              <div className="mb-12 text-center pb-8 border-b-2 border-gray-200">
+                {coverImage ? (
+                  <div className="relative inline-block max-w-2xl mx-auto mb-6">
+                    <img
+                      src={coverImage}
+                      alt="Book Cover"
+                      className="w-full rounded-lg shadow-2xl"
+                    />
+                  </div>
+                ) : (
+                  <div className="bg-gray-200 rounded-lg w-64 h-80 mx-auto mb-6 flex items-center justify-center">
+                    <span className="text-gray-400">No cover image</span>
+                  </div>
+                )}
+                <h1 className="text-5xl font-bold text-gray-900 mb-2">{bookTitle || 'Novel'}</h1>
+              </div>
+
+              {/* Table of Contents */}
+              <div className="mb-12 pb-8 border-b-2 border-gray-200">
+                <h2 className="text-3xl font-bold text-gray-800 mb-4">Table of Contents</h2>
+                <ul className="space-y-2 text-lg text-gray-700">
+                  {chapters.map((ch, idx) => (
+                    <li key={idx} className="flex justify-between">
+                      <span>Chapter {idx + 1}: {ch.title}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              {/* All Chapters */}
+              {chapters.map((ch, idx) => (
+                <div key={idx} className="mb-12 pb-8">
+                  <h2 className="text-4xl font-bold text-gray-900 mb-4">Chapter {idx + 1}: {ch.title}</h2>
+
+                  {/* Chapter Image */}
+                  {ch.imageUrl && (
+                    <div className="mb-6">
+                      <img
+                        src={ch.imageUrl}
+                        alt={`Chapter ${idx + 1}: ${ch.title}`}
+                        className="w-full rounded-lg shadow-lg"
+                      />
+                    </div>
+                  )}
+
+                  {/* Chapter Content */}
+                  <div className="prose prose-lg max-w-none leading-relaxed text-gray-800">
+                    {expandedChapters[idx].split('\n\n').map((paragraph, pIdx) => (
+                      <p key={pIdx} className="mb-4 text-justify indent-8 leading-loose">{paragraph}</p>
+                    ))}
+                  </div>
+
+                  {idx < chapters.length - 1 && (
+                    <div className="mt-8 border-b-2 border-gray-200"></div>
+                  )}
+                </div>
+              ))}
+
+              {/* End Page */}
+              <div className="text-center py-12">
+                <p className="text-2xl font-serif text-gray-600">~ The End ~</p>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="sticky bottom-0 p-6 bg-gray-50 border-t border-gray-200 rounded-b-lg flex justify-end gap-3">
+              <button
+                onClick={() => {
+                  const chaptersHtml = chapters.map((ch, idx) => `
+                    <h2>Chapter ${idx + 1}: ${ch.title}</h2>
+                    ${ch.imageUrl ? `<img src="${ch.imageUrl}" alt="Chapter ${idx + 1}: ${ch.title}">` : ''}
+                    ${expandedChapters[idx]?.split('\n\n').map(para => `<p>${para}</p>`).join('') || ''}
+                  `).join('');
+
+                  const toc = chapters.map((ch, idx) => `<li>Chapter ${idx + 1}: ${ch.title}</li>`).join('');
+
+                  const htmlContent = `
+                    <h1>${bookTitle || 'Novel'}</h1>
+                    <p>${chapters.length} Chapters</p>
+                    <h2>Table of Contents</h2>
+                    <ul>${toc}</ul>
+                    ${chaptersHtml}
+                    <p>~ The End ~</p>
+                  `;
+
+                  const imageUrls = [
+                    ...(coverImage ? [coverImage] : []),
+                    ...chapters.map(ch => ch.imageUrl).filter((url): url is string => !!url)
+                  ];
+
+                  handleCopyWithImages(htmlContent, imageUrls);
+                }}
+                className="px-6 py-2 bg-green-600 text-white rounded-md hover:bg-green-700"
+              >
+                📋 Copy (with Images)
+              </button>
+              <button
+                onClick={() => handleOpenFullBookPreview()}
+                className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700"
+              >
+                Open in New Tab
+              </button>
+              <button
+                onClick={() => setIsPreviewingFullBook(false)}
+                className="px-6 py-2 bg-gray-600 text-white rounded-md hover:bg-gray-700"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+});
+
+StoryExpander.displayName = 'StoryExpander';
+
+export default StoryExpander;
+
