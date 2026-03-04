@@ -111,15 +111,15 @@ const generateWithModel = async (prompt: string, model: string, openaiClient?: O
   try {
     let output = '';
 
-    // GPT-5.2 and GPT-5.2-pro use the new responses API
-    if (model.includes('5.2')) {
+    // GPT-5 models (5.2, 5.2-pro, and 5-mini) use the new responses API
+    if (model.startsWith('gpt-5')) {
       const response = await (client as any).responses.create({
         model,
         input: prompt,
       });
 
       // Debug: log the response structure to understand it
-      console.log('[Backend] GPT-5.2 response structure:', JSON.stringify(response, null, 2));
+      console.log(`[Backend] GPT-5 (${model}) response structure:`, JSON.stringify(response, null, 2));
 
       // Extract text from response structure: find the "message" type in output array
       if (response.output && Array.isArray(response.output)) {
@@ -137,18 +137,29 @@ const generateWithModel = async (prompt: string, model: string, openaiClient?: O
 
       // If still no output, log error
       if (!output) {
-        console.error('[Backend] Failed to extract text from GPT-5.2 response. Full response:', JSON.stringify(response, null, 2));
-        throw new Error('Could not extract text from GPT-5.2 response structure');
+        console.error('[Backend] Failed to extract text from GPT-5 response. Full response:', JSON.stringify(response, null, 2));
+        throw new Error(`Could not extract text from GPT-5 (${model}) response structure`);
       }
     } else {
-      // GPT-5-mini and GPT-4o use chat completions API
-      const tokenParam = model.startsWith('gpt-5') ? { max_completion_tokens: 4000 } : { max_tokens: 4000 };
+      // GPT-4 and older models use chat completions API
+      const tokenParam = { max_tokens: 4000 };
       const completion = await client.chat.completions.create({
         model,
         messages: [{ role: 'user', content: prompt }],
         ...tokenParam,
       });
-      output = completion.choices[0]?.message?.content || '';
+
+      const choice = completion.choices[0];
+      if (choice?.message?.refusal) {
+        console.error('[Backend] Content was refused:', choice.message.refusal);
+        throw new Error(`Content policy refusal: ${choice.message.refusal}`);
+      }
+
+      output = choice?.message?.content || '';
+
+      if (!output) {
+        console.error('[Backend] Empty content. Finish reason:', choice?.finish_reason);
+      }
     }
 
     if (!output) {
