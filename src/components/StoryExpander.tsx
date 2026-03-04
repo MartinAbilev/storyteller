@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useImperativeHandle, forwardRef, useRef } from 'react';
-import { API_KEYS_STORAGE_KEY, type ApiKeys } from './SettingsModal';
 
 // Import types and constants
 import {
@@ -7,25 +6,18 @@ import {
   PROMPTS_STORAGE_KEY,
   type KeyElements,
   type Chapter,
-  MODEL_OPTIONS,
-  GLOBAL_IMAGE_STYLE
 } from './StoryExpander/constants';
 
 // Import utilities
 import {
   chunkText,
   hashDraft,
-  imageUrlToBase64,
   getStoredApiKey,
-  handleApiError,
-  parseJsonResponse
 } from './StoryExpander/utils';
 
 // Import API functions
 import {
   summarizeDraft,
-  generateImage,
-  generateImagePrompt,
   refreshImageStyle,
 } from './StoryExpander/api';
 

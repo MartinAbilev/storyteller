@@ -950,6 +950,64 @@ app.get('/api/load-state', async (_req, res) => {
   }
 });
 
+// Store preview pages temporarily (UUID -> HTML content)
+const previewStore = new Map<string, { html: string; timestamp: number }>();
+const PREVIEW_EXPIRY_MS = 5 * 60 * 1000; // 5 minutes
+
+// Cleanup old previews every minute
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, value] of previewStore.entries()) {
+    if (now - value.timestamp > PREVIEW_EXPIRY_MS) {
+      previewStore.delete(key);
+    }
+  }
+}, 60000);
+
+// POST endpoint to create temporary preview page
+app.post('/api/preview', (req, res) => {
+  try {
+    const { html } = req.body;
+    if (!html || typeof html !== 'string') {
+      return res.status(400).json({ error: 'Missing html content' });
+    }
+
+    // Generate UUID for this preview
+    const id = `${Date.now()}-${Math.random().toString(36).substring(2, 11)}`;
+    previewStore.set(id, { html, timestamp: Date.now() });
+
+    // Return full URL to preview (so it opens on backend origin, not frontend)
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    res.json({ previewUrl: `${baseUrl}/preview/${id}` });
+  } catch (err) {
+    console.error('[Backend] Preview endpoint error:', err);
+    res.status(500).json({ error: 'Failed to create preview' });
+  }
+});
+
+// GET endpoint to serve preview pages
+app.get('/preview/:id', (req, res) => {
+  try {
+    const { id } = req.params;
+    const preview = previewStore.get(id);
+
+    if (!preview) {
+      // Return a simple 404 page
+      res.status(404).type('text/html').send('<html><body><h1>Preview expired or not found</h1><p>Please generate a new preview.</p></body></html>');
+      return;
+    }
+
+    // Update timestamp to extend expiry on access
+    preview.timestamp = Date.now();
+
+    // Serve the HTML with proper headers for extension access
+    res.type('text/html').send(preview.html);
+  } catch (err) {
+    console.error('[Backend] Preview serving error:', err);
+    res.status(500).send('<html><body><h1>Error</h1><p>Failed to load preview.</p></body></html>');
+  }
+});
+
 // Global error handler - must be last
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
   console.error('[Backend] Unhandled error:', err.message || err);

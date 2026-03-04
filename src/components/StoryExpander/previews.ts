@@ -4,7 +4,7 @@ import { imageUrlToBase64 } from './utils';
 import type { Chapter } from './constants';
 
 /**
- * Open chapter preview in new tab with embedded images
+ * Open chapter preview in new tab via server
  */
 export const openChapterPreviewInNewTab = async (
   idx: number,
@@ -62,10 +62,23 @@ export const openChapterPreviewInNewTab = async (
       </html>
     `;
 
-    // Create blob and open in new tab
-    const blob = new Blob([htmlContent], { type: 'text/html' });
-    const blobUrl = URL.createObjectURL(blob);
-    window.open(blobUrl, '_blank');
+    // POST HTML to server and get preview URL
+    const response = await fetch('/api/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ html: htmlContent }),
+    });
+
+    if (!response.ok) {
+      throw new Error('Failed to create preview');
+    }
+
+    const data = await response.json();
+    if (data.previewUrl) {
+      window.open(data.previewUrl, '_blank');
+    } else {
+      onError('Failed to get preview URL from server');
+    }
   } catch (err) {
     console.error('Error opening chapter preview:', err);
     onError(`Failed to open chapter preview: ${err}`);
@@ -73,7 +86,7 @@ export const openChapterPreviewInNewTab = async (
 };
 
 /**
- * Open full book preview in new tab with embedded images
+ * Open full book preview in new tab via server
  */
 export const openFullBookPreviewInNewTab = async (
   chapters: Chapter[],
@@ -179,18 +192,26 @@ export const openFullBookPreviewInNewTab = async (
       </html>
     `;
 
-    // Create blob and open in new tab
-    const blob = new Blob([htmlContent], { type: 'text/html' });
-    const blobUrl = URL.createObjectURL(blob);
-    const newWindow = window.open(blobUrl, '_blank');
+    // POST HTML to server and get preview URL
+    const response = await fetch('/api/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ html: htmlContent }),
+    });
 
-    if (newWindow) {
+    if (!response.ok) {
+      throw new Error('Failed to create preview');
+    }
+
+    const data = await response.json();
+    if (data.previewUrl) {
+      window.open(data.previewUrl, '_blank');
       if (onStatus) {
-        onStatus('Book preview opened! Images are embedded. Use Google Translate to copy in other languages.');
+        onStatus('Book preview opened! Translate and read-aloud extensions can now access the page.');
         setTimeout(() => onStatus?.(''), 3000);
       }
     } else {
-      onError('Failed to open preview window. Check if pop-ups are blocked.');
+      onError('Failed to get preview URL from server');
     }
   } catch (err) {
     console.error('Error opening book preview:', err);
