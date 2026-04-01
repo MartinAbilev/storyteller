@@ -36,6 +36,7 @@ export const MODEL_OPTIONS = [
   { value: 'gpt-4o-mini', label: 'GPT-4o-mini (Legacy)' },
   { value: 'gpt-4o', label: 'GPT-4o (Legacy)' },
   { value: 'gpt-5-mini', label: 'GPT-5 mini (Fast & Cheap) - Default' },
+  { value: 'gpt-5.4-mini', label: 'GPT-5.4 mini (Fast & Cheap)' },
   { value: 'gpt-5.2', label: 'GPT-5.2 (Best for coding)' },
   { value: 'gpt-5.2-pro', label: 'GPT-5.2 pro (Smartest)' },
 ];
