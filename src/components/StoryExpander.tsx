@@ -83,6 +83,8 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
   const lastGlobalImageStyleRef = useRef<string>('');
   const pendingStyleChangeRef = useRef<boolean>(false);
 
+  const [coverGenerationAttempted, setCoverGenerationAttempted] = useState<boolean>(false);
+
   // Expose saveNow method via ref
   useImperativeHandle(ref, () => ({
     saveNow: () => {
@@ -219,6 +221,7 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
     setBookTitle,
     setGlobalImageStyle,
     setCoverGenerationInProgress,
+    setCoverGenerationAttempted,
     setChapterImageLoading,
     setChapterImagePromptLoading,
   });
@@ -569,11 +572,13 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
         expandedChapters.every(ch => ch) &&
         !coverImage &&
         !coverGenerationInProgress &&
+        !coverGenerationAttempted &&
         currentStep === 3 &&
         currentChapterIndex >= chapters.length) {
+      setCoverGenerationAttempted(true);
       generateCoverImage();
     }
-  }, [chapters.length, expandedChapters, coverImage, coverGenerationInProgress, currentStep, currentChapterIndex]);
+  }, [chapters.length, expandedChapters, coverImage, coverGenerationInProgress, coverGenerationAttempted, currentStep, currentChapterIndex]);
 
   // Wrapper for chapter preview with local state
   const handleOpenChapterPreview = async (idx: number) => {

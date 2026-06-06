@@ -38,6 +38,7 @@ type UseImageHandlersParams = {
   setBookTitle: React.Dispatch<React.SetStateAction<string>>;
   setGlobalImageStyle: React.Dispatch<React.SetStateAction<string>>;
   setCoverGenerationInProgress: React.Dispatch<React.SetStateAction<boolean>>;
+  setCoverGenerationAttempted: React.Dispatch<React.SetStateAction<boolean>>;
   setChapterImageLoading: React.Dispatch<React.SetStateAction<number | null>>;
   setChapterImagePromptLoading: React.Dispatch<React.SetStateAction<number | null>>;
 };
@@ -67,6 +68,7 @@ export const useImageHandlers = ({
   setBookTitle,
   setGlobalImageStyle,
   setCoverGenerationInProgress,
+  setCoverGenerationAttempted,
   setChapterImageLoading,
   setChapterImagePromptLoading,
 }: UseImageHandlersParams) => {
@@ -470,6 +472,8 @@ export const useImageHandlers = ({
   const generateCoverImage = async (force = false) => {
     if (coverGenerationInProgress && !force) return;
     if (!chapters.length || !expandedChapters.every(ch => ch)) return;
+
+    setCoverGenerationAttempted(true);
 
     try {
       if (!coverGenerationInProgress) {
