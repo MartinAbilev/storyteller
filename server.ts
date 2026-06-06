@@ -898,11 +898,13 @@ app.post('/api/generate-image', async (req, res) => {
   } catch (error: any) {
     console.error(`[Backend] Image generation error: ${error.message || error}`);
     try {
-      return res.status(500).json({ error: `Image generation failed: ${error.message || 'Unknown error'}` });
+      if (!res.headersSent) {
+        return res.json({ imageUrl: null, error: `Critical backend error: ${error.message || 'Unknown'}` });
+      }
     } catch (sendError) {
       console.error(`[Backend] Failed to send error response: ${sendError}`);
       if (!res.headersSent) {
-        return res.status(500).json({ error: 'Internal server error' });
+        return res.status(500).json({ error: 'Internal server errora' });
       }
     }
   }
