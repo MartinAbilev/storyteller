@@ -97,7 +97,7 @@ export const imageUrlToBase64 = async (url: string): Promise<string> => {
  */
 export const getStoredApiKey = (): string => {
   try {
-    const stored = localStorage.getItem('apiKeysStorage');
+    const stored = localStorage.getItem('storyExpanderApiKeys');
     if (stored) {
       const keys = JSON.parse(stored) as any;
       return keys.openai || '';
