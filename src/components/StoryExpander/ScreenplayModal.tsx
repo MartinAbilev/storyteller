@@ -5,6 +5,8 @@ interface ScreenplayModalProps {
   screenplay: string;
   bookTitle: string;
   onClose: () => void;
+  onRegenerate: () => void;
+  isGenerating: boolean;
 }
 
 export const ScreenplayModal: React.FC<ScreenplayModalProps> = ({
@@ -12,6 +14,8 @@ export const ScreenplayModal: React.FC<ScreenplayModalProps> = ({
   screenplay,
   bookTitle,
   onClose,
+  onRegenerate,
+  isGenerating,
 }) => {
   if (!isOpen) return null;
 
@@ -53,6 +57,13 @@ export const ScreenplayModal: React.FC<ScreenplayModalProps> = ({
         </div>
 
         <div className="flex flex-wrap justify-end gap-3 border-t border-slate-700 bg-slate-950 px-6 py-4">
+          <button
+            onClick={onRegenerate}
+            disabled={isGenerating}
+            className="rounded-md bg-red-700 px-4 py-2 text-sm font-medium text-white hover:bg-red-600 disabled:opacity-50"
+          >
+            {isGenerating ? 'Regenerating...' : 'Regenerate Script'}
+          </button>
           <button
             onClick={copyScreenplay}
             className="rounded-md bg-slate-700 px-4 py-2 text-sm font-medium text-white hover:bg-slate-600"

@@ -750,6 +750,8 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
         handleCopyWithImages={handleCopyWithImages}
         onGenerateScreenplay={handleGenerateScreenplay}
         isGeneratingScreenplay={isGeneratingScreenplay}
+        hasScreenplay={!!movieScript}
+        onOpenScreenplay={() => setIsScreenplayOpen(true)}
       />
 
       <ScreenplayModal
@@ -757,6 +759,8 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
         screenplay={movieScript}
         bookTitle={bookTitle}
         onClose={() => setIsScreenplayOpen(false)}
+        onRegenerate={handleGenerateScreenplay}
+        isGenerating={isGeneratingScreenplay}
       />
 
       <ChapterPreviewModal

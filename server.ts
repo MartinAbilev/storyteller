@@ -104,7 +104,14 @@ const sanitizeChapterImagePrompt = (prompt: string, globalStyle?: string): strin
   return cleaned;
 };
 
-const generateWithModel = async (prompt: string, model: string, openaiClient?: OpenAI, retries = 3, isFallback = false): Promise<string> => {
+const generateWithModel = async (
+  prompt: string,
+  model: string,
+  openaiClient?: OpenAI,
+  retries = 3,
+  isFallback = false,
+  maxOutputTokens = 4000
+): Promise<string> => {
   const client = openaiClient || openai;
   console.log(`[Backend] Generating with OpenAI model "${model}" (prompt length: ${prompt.length} chars, retries left: ${retries}, fallback: ${isFallback})`);
 
@@ -116,6 +123,7 @@ const generateWithModel = async (prompt: string, model: string, openaiClient?: O
       const response = await (client as any).responses.create({
         model,
         input: prompt,
+        max_output_tokens: maxOutputTokens,
       });
 
       // Debug: log the response structure to understand it
@@ -142,7 +150,7 @@ const generateWithModel = async (prompt: string, model: string, openaiClient?: O
       }
     } else {
       // GPT-4 and older models use chat completions API
-      const tokenParam = { max_tokens: 4000 };
+      const tokenParam = { max_tokens: maxOutputTokens };
       const completion = await client.chat.completions.create({
         model,
         messages: [{ role: 'user', content: prompt }],
@@ -171,11 +179,11 @@ const generateWithModel = async (prompt: string, model: string, openaiClient?: O
     console.error(`[Backend] Generation error: ${error.message || error}`);
     if (retries > 0) {
       console.log(`[Backend] Retrying with same model... (${retries - 1} left)`);
-      return generateWithModel(prompt, model, openaiClient, retries - 1, isFallback);
+      return generateWithModel(prompt, model, openaiClient, retries - 1, isFallback, maxOutputTokens);
     }
     if (!isFallback && model !== 'gpt-5-mini') {
       console.log(`[Backend] Falling back to gpt-5-mini...`);
-      return generateWithModel(prompt, 'gpt-5-mini', openaiClient, 3, true);
+      return generateWithModel(prompt, 'gpt-5-mini', openaiClient, 3, true, maxOutputTokens);
     }
     throw error;
   }
@@ -935,52 +943,65 @@ app.post('/api/generate-screenplay', async (req, res) => {
     if (keyError) return res.status(401).json({ error: keyError });
     const openaiClient = getOpenAIClient(openaiApiKey);
 
-    const screenplayPrompt = `You are a professional screenwriter adapting a complete novel outline and chapter expansion into a production-ready feature film screenplay.
+    const storyBible = JSON.stringify(keyElements || {}, null, 2);
+    const screenplayParts: string[] = [];
 
-Return ONLY the screenplay in Fountain-compatible plain text. Do not use Markdown fences, commentary, chapter headings, analysis, or a synopsis.
+    for (let index = 0; index < chapters.length; index++) {
+      const chapter = chapters[index];
+      const previousSegment = screenplayParts[index - 1] || '(This is the opening chapter.)';
+      const screenplayPrompt = `You are adapting ONE chapter of a novel into a substantial production-ready feature film screenplay segment.
 
-FORMAT REQUIREMENTS:
-- Use standard screenplay conventions and Fountain syntax.
-- Use INT. or EXT. sluglines with location and TIME OF DAY (for example: INT. KITCHEN - NIGHT).
-- Write visual, filmable action in present tense. Keep action paragraphs concise and avoid novelistic internal exposition.
-- Introduce a character in action in ALL CAPS the first time they appear.
-- Put CHARACTER names in uppercase before dialogue. Use parentheticals sparingly and only for performance clarity.
-- Use CUT TO:, DISSOLVE TO:, FADE IN:, FADE OUT., and other transitions only when editorially meaningful.
-- Use scene headings, action, dialogue, parentheticals, transitions, MONTAGE:, INTERCUT:, and SUPER: appropriately.
-- Preserve the story's causality, character arcs, emotional turns, reveals, timeline, tone, relationships, world rules, distinctive details, and all important nuances.
-- Convert prose thoughts into visible behavior, subtext, choices, images, or dialogue. Do not simply summarize chapters.
-- Combine or reorder material only when needed for cinematic pacing, while preserving essential events and continuity.
-- Aim for a complete feature screenplay with a strong opening, escalating complications, midpoint turn, crisis, climax, and resolved ending. Do not stop at an outline.
-- Do not invent major characters, rules, plot turns, or endings that contradict the supplied material.
-- Keep the output practical for import into Arc Studio Pro as Fountain/plain text. Do not include page numbers, title-page metadata, or production notes.
+Return ONLY Fountain-compatible screenplay text. Do not return a synopsis, outline, analysis, chapter summary, Markdown fences, or commentary.
+
+This is chapter ${index + 1} of ${chapters.length}. Write the complete cinematic scenes for this chapter only, preserving its beginning, middle, ending, events, nuances, character behavior, timeline, and emotional turns. Do not skip or compress the chapter into one short scene. Use multiple scenes when the material changes location, time, objective, or conflict.
+
+FORMAT:
+- Use INT. or EXT. sluglines with location and TIME OF DAY.
+- Use present-tense visual action, concise but substantial scene paragraphs, and filmable behavior.
+- Use uppercase CHARACTER cues, dialogue, limited parentheticals, transitions, MONTAGE:, INTERCUT:, and SUPER: when appropriate.
+- Convert internal prose into visible action, subtext, choices, images, or dialogue.
+- Keep all names, relationships, world rules, distinctive details, reveals, and continuity accurate.
+- Do not invent major plot turns or omit the chapter ending.
+- Do not add chapter labels or page numbers. The result will be stitched to the other chapter segments.
+${index === 0 ? '- Start with FADE IN: and establish the story world and main characters.' : '- Begin directly with the next screenplay scene after the previous segment; do not repeat its last scene.'}
+${index === chapters.length - 1 ? '- This is the final chapter. Write the climax, resolve the important arcs, and end the film decisively.' : '- End this segment at the chapter\'s true dramatic transition so the next chapter can continue naturally.'}
 
 TITLE: ${bookTitle || 'Untitled'}
 
 MASTER STORY SUMMARY:
 ${condensedDraft || '(not available)'}
 
-CANONICAL STORY BIBLE (treat these as continuity constraints):
-${JSON.stringify(keyElements || {}, null, 2)}
+CANONICAL STORY BIBLE:
+${storyBible}
 
-CHAPTER OUTLINE, TIMELINE, NUANCES, AND EXPANDED MATERIAL:
-${chapters.map((chapter: any, index: number) => `
-=== CHAPTER ${index + 1}: ${chapter.title} ===
-Chapter summary: ${chapter.summary || ''}
+CURRENT CHAPTER ${index + 1}:
+Title: ${chapter.title}
+Summary: ${chapter.summary || ''}
 Key events: ${JSON.stringify(chapter.keyEvents || [])}
 Character traits and development: ${JSON.stringify(chapter.characterTraits || [])}
 Timeline: ${chapter.timeline || ''}
 Custom instructions and nuances: ${chapterPrompts?.[index] || '(none)'}
 Expanded chapter text:
 ${expandedChapters[index]}
-`).join('\n')}
 
-Now write the complete screenplay in Fountain format.`;
+PREVIOUS SCREENPLAY SEGMENT FOR CONTINUITY (do not repeat it; use only as context):
+${previousSegment.slice(-12000)}
 
-    console.log(`[Backend] Generating screenplay from ${chapters.length} chapters (prompt length: ${screenplayPrompt.length} chars)`);
-    const screenplay = (await generateWithModel(screenplayPrompt, model, openaiClient))
-      .replace(/^```(?:fountain|screenplay|text)?\s*\n?/i, '')
-      .replace(/\n?```$/i, '')
-      .trim();
+Now write the full screenplay segment for chapter ${index + 1}.`;
+
+      console.log(`[Backend] Generating screenplay chapter ${index + 1}/${chapters.length} (prompt length: ${screenplayPrompt.length} chars)`);
+      const segment = (await generateWithModel(screenplayPrompt, model, openaiClient, 3, false, 8000))
+        .replace(/^```(?:fountain|screenplay|text)?\s*\n?/i, '')
+        .replace(/\n?```$/i, '')
+        .trim();
+
+      if (!segment) {
+        throw new Error(`Screenplay chapter ${index + 1} returned empty content`);
+      }
+      screenplayParts.push(segment);
+    }
+
+    const screenplay = screenplayParts.join('\n\n').trim();
 
     return res.json({ screenplay });
   } catch (error: any) {

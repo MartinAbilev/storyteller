@@ -22,6 +22,8 @@ interface FullStoryDisplayProps {
   handleCopyWithImages: (htmlContent: string, imageUrls: string[]) => void;
   onGenerateScreenplay: () => void;
   isGeneratingScreenplay: boolean;
+  hasScreenplay: boolean;
+  onOpenScreenplay: () => void;
 }
 
 export const FullStoryDisplay: React.FC<FullStoryDisplayProps> = ({
@@ -45,6 +47,8 @@ export const FullStoryDisplay: React.FC<FullStoryDisplayProps> = ({
   handleCopyWithImages,
   onGenerateScreenplay,
   isGeneratingScreenplay,
+  hasScreenplay,
+  onOpenScreenplay,
 }) => {
   if (!fullStory || !chapters.some((_, idx) => expandedChapters[idx])) {
     return null;
@@ -92,6 +96,14 @@ export const FullStoryDisplay: React.FC<FullStoryDisplayProps> = ({
             className="px-4 py-2 bg-slate-900 text-white rounded-md hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {isGeneratingScreenplay ? 'Generating Screenplay...' : 'Generate Movie Script'}
+          </button>
+        )}
+        {hasScreenplay && (
+          <button
+            onClick={onOpenScreenplay}
+            className="px-4 py-2 bg-teal-700 text-white rounded-md hover:bg-teal-600"
+          >
+            Open Existing Script
           </button>
         )}
         {expandedChapters.every(ch => ch) && (
