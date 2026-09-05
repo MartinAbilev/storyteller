@@ -3,10 +3,14 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
+    "check:node": "node -e \"const v = process.versions.node.split('.').map(Number); const major = v[0]; const minor = v[1] || 0; const supported = major >= 22 || (major === 20 && minor >= 19); if (!supported) { console.error('Unsupported Node.js ' + process.version + '. Use Node 20.19+ or 22.12+ (recommended: 22.12.0).'); process.exit(1); }\"",
     "dev:backend": "nodemon server.ts",
-    "dev:frontend": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
+    "dev:frontend": "npm run check:node && vite",
+    "build": "npm run check:node && vite build",
+    "preview": "npm run check:node && vite preview"
+  },
+  "engines": {
+    "node": ">=20.19.0 || >=22.12.0"
   },
   "keywords": [],
   "author": "",
