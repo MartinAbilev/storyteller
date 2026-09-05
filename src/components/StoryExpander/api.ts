@@ -94,6 +94,17 @@ type GenerateBookTitleParams = {
   apiKey?: string;
 };
 
+type GenerateScreenplayParams = {
+  bookTitle?: string;
+  condensedDraft: string;
+  keyElements: KeyElements | null;
+  chapters: Chapter[];
+  expandedChapters: string[];
+  chapterPrompts: string[];
+  model: string;
+  openaiApiKey?: string;
+};
+
 /**
  * Summarize a draft chunk
  */
@@ -432,4 +443,44 @@ export const generateBookTitle = async (
   }
 
   return parseJsonResponse(response, 'generate-book-title');
+};
+
+/**
+ * Generate an Arc Studio-friendly Fountain screenplay from expanded chapters.
+ */
+export const generateScreenplay = async (
+  params: GenerateScreenplayParams
+): Promise<{ screenplay: string }> => {
+  const {
+    bookTitle = '',
+    condensedDraft,
+    keyElements,
+    chapters,
+    expandedChapters,
+    chapterPrompts,
+    model,
+    openaiApiKey = '',
+  } = params;
+
+  const response = await fetch('/api/generate-screenplay', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      bookTitle,
+      condensedDraft,
+      keyElements,
+      chapters,
+      expandedChapters,
+      chapterPrompts,
+      model,
+      openaiApiKey,
+    }),
+  });
+
+  if (!response.ok) {
+    const errData = await response.json();
+    throw handleApiError(errData, response);
+  }
+
+  return parseJsonResponse(response, 'generate-screenplay');
 };

@@ -20,6 +20,8 @@ interface FullStoryDisplayProps {
   handleRegenerateChapterImage: (index: number) => void;
   handleRegenerateChapterImagePrompt: (index: number) => void;
   handleCopyWithImages: (htmlContent: string, imageUrls: string[]) => void;
+  onGenerateScreenplay: () => void;
+  isGeneratingScreenplay: boolean;
 }
 
 export const FullStoryDisplay: React.FC<FullStoryDisplayProps> = ({
@@ -41,6 +43,8 @@ export const FullStoryDisplay: React.FC<FullStoryDisplayProps> = ({
   handleRegenerateChapterImage,
   handleRegenerateChapterImagePrompt,
   handleCopyWithImages,
+  onGenerateScreenplay,
+  isGeneratingScreenplay,
 }) => {
   if (!fullStory || !chapters.some((_, idx) => expandedChapters[idx])) {
     return null;
@@ -79,6 +83,15 @@ export const FullStoryDisplay: React.FC<FullStoryDisplayProps> = ({
             className="px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700"
           >
             Preview Book
+          </button>
+        )}
+        {expandedChapters.every(ch => ch) && (
+          <button
+            onClick={onGenerateScreenplay}
+            disabled={isGeneratingScreenplay}
+            className="px-4 py-2 bg-slate-900 text-white rounded-md hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {isGeneratingScreenplay ? 'Generating Screenplay...' : 'Generate Movie Script'}
           </button>
         )}
         {expandedChapters.every(ch => ch) && (

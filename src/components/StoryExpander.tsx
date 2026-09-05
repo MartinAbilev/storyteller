@@ -19,6 +19,7 @@ import {
 import {
   summarizeDraft,
   refreshImageStyle,
+  generateScreenplay,
 } from './StoryExpander/api';
 
 // Import preview functions
@@ -42,6 +43,7 @@ import { FullStoryDisplay } from './StoryExpander/FullStoryDisplay';
 import { ChapterPreviewModal } from './StoryExpander/ChapterPreviewModal';
 import { FullBookPreviewModal } from './StoryExpander/FullBookPreviewModal';
 import { StatusDisplay } from './StoryExpander/StatusDisplay';
+import { ScreenplayModal } from './StoryExpander/ScreenplayModal';
 
 const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
   const [draft, setDraft] = useState<string>('');
@@ -84,6 +86,9 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
   const pendingStyleChangeRef = useRef<boolean>(false);
 
   const [coverGenerationAttempted, setCoverGenerationAttempted] = useState<boolean>(false);
+  const [movieScript, setMovieScript] = useState<string>('');
+  const [isScreenplayOpen, setIsScreenplayOpen] = useState<boolean>(false);
+  const [isGeneratingScreenplay, setIsGeneratingScreenplay] = useState<boolean>(false);
 
   // Expose saveNow method via ref
   useImperativeHandle(ref, () => ({
@@ -155,6 +160,7 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
           if (progress.coverPrompt) {
             setCoverPrompt(progress.coverPrompt);
           }
+          setMovieScript(progress.movieScript || '');
           if (progress.globalImageStyle) {
             lastGlobalImageStyleRef.current = progress.globalImageStyle;
             setGlobalImageStyle(progress.globalImageStyle);
@@ -283,7 +289,8 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
     overrideCoverImage?: string,
     overrideBookTitle?: string,
     overrideCoverPrompt?: string,
-    overrideChapters?: Chapter[]
+    overrideChapters?: Chapter[],
+    overrideMovieScript?: string
   ) => {
     const progress = {
       draft,
@@ -303,6 +310,7 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
       bookTitle: overrideBookTitle !== undefined ? overrideBookTitle : bookTitle,
       coverPrompt: overrideCoverPrompt !== undefined ? overrideCoverPrompt : coverPrompt,
       globalImageStyle,
+      movieScript: overrideMovieScript !== undefined ? overrideMovieScript : movieScript,
     };
     localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(progress));
     // Also attempt to persist to the backend as story.json (best-effort, non-blocking)
@@ -356,6 +364,7 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
     setDraftHash('');
     setCoverImage('');
     setBookTitle('');
+    setMovieScript('');
     setStatus('Progress cleared—start over.');
     setError('');
     setRawError('');
@@ -481,6 +490,39 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
   const handleContinue = () => {
     if (isLoading) return;
     processStep();
+  };
+
+  const handleGenerateScreenplay = async () => {
+    if (isGeneratingScreenplay || !chapters.length || expandedChapters.some(chapter => !chapter?.trim())) {
+      return;
+    }
+
+    setIsGeneratingScreenplay(true);
+    setError('');
+    setRawError('');
+    setStatus('Generating Fountain screenplay from the complete story bible and chapters...');
+
+    try {
+      const data = await generateScreenplay({
+        bookTitle,
+        condensedDraft,
+        keyElements,
+        chapters,
+        expandedChapters,
+        chapterPrompts,
+        model,
+        openaiApiKey: getStoredApiKey(),
+      });
+      setMovieScript(data.screenplay);
+      setIsScreenplayOpen(true);
+      setStatus('Movie script generated in Fountain format.');
+      saveProgress(undefined, undefined, undefined, undefined, data.screenplay);
+    } catch (err: any) {
+      setError(`Screenplay generation failed: ${err.message || 'Unknown error'}`);
+      setRawError(err.rawResponse || '');
+    } finally {
+      setIsGeneratingScreenplay(false);
+    }
   };
 
   const handleEditSummaryPrompt = () => {
@@ -706,6 +748,15 @@ const StoryExpander = forwardRef<{ saveNow: () => void }, {}>((props, ref) => {
         handleRegenerateChapterImage={handleRegenerateChapterImage}
         handleRegenerateChapterImagePrompt={handleRegenerateChapterImagePrompt}
         handleCopyWithImages={handleCopyWithImages}
+        onGenerateScreenplay={handleGenerateScreenplay}
+        isGeneratingScreenplay={isGeneratingScreenplay}
+      />
+
+      <ScreenplayModal
+        isOpen={isScreenplayOpen}
+        screenplay={movieScript}
+        bookTitle={bookTitle}
+        onClose={() => setIsScreenplayOpen(false)}
       />
 
       <ChapterPreviewModal

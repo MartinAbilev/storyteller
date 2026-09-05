@@ -6,6 +6,11 @@ body {
   background-color: #f3f4f6;
 }
 
+.screenplay-page {
+  font-family: "Courier Prime", "Courier New", Courier, monospace;
+  font-variant-ligatures: none;
+}
+
 /* Page break styles for PDF export */
 @media print {
   /* Reset and show everything first */

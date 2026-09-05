@@ -910,6 +910,85 @@ app.post('/api/generate-image', async (req, res) => {
   }
 });
 
+// Generate a feature screenplay from the completed chapter material.
+app.post('/api/generate-screenplay', async (req, res) => {
+  try {
+    const {
+      bookTitle,
+      condensedDraft,
+      keyElements,
+      chapters,
+      expandedChapters,
+      chapterPrompts,
+      model,
+      openaiApiKey,
+    } = req.body;
+
+    if (!Array.isArray(chapters) || !Array.isArray(expandedChapters) || chapters.length === 0) {
+      return res.status(400).json({ error: 'Completed chapters are required' });
+    }
+    if (expandedChapters.some((chapter: unknown) => typeof chapter !== 'string' || !chapter.trim())) {
+      return res.status(400).json({ error: 'All chapters must be expanded before generating a screenplay' });
+    }
+
+    const keyError = validateApiKey(openaiApiKey);
+    if (keyError) return res.status(401).json({ error: keyError });
+    const openaiClient = getOpenAIClient(openaiApiKey);
+
+    const screenplayPrompt = `You are a professional screenwriter adapting a complete novel outline and chapter expansion into a production-ready feature film screenplay.
+
+Return ONLY the screenplay in Fountain-compatible plain text. Do not use Markdown fences, commentary, chapter headings, analysis, or a synopsis.
+
+FORMAT REQUIREMENTS:
+- Use standard screenplay conventions and Fountain syntax.
+- Use INT. or EXT. sluglines with location and TIME OF DAY (for example: INT. KITCHEN - NIGHT).
+- Write visual, filmable action in present tense. Keep action paragraphs concise and avoid novelistic internal exposition.
+- Introduce a character in action in ALL CAPS the first time they appear.
+- Put CHARACTER names in uppercase before dialogue. Use parentheticals sparingly and only for performance clarity.
+- Use CUT TO:, DISSOLVE TO:, FADE IN:, FADE OUT., and other transitions only when editorially meaningful.
+- Use scene headings, action, dialogue, parentheticals, transitions, MONTAGE:, INTERCUT:, and SUPER: appropriately.
+- Preserve the story's causality, character arcs, emotional turns, reveals, timeline, tone, relationships, world rules, distinctive details, and all important nuances.
+- Convert prose thoughts into visible behavior, subtext, choices, images, or dialogue. Do not simply summarize chapters.
+- Combine or reorder material only when needed for cinematic pacing, while preserving essential events and continuity.
+- Aim for a complete feature screenplay with a strong opening, escalating complications, midpoint turn, crisis, climax, and resolved ending. Do not stop at an outline.
+- Do not invent major characters, rules, plot turns, or endings that contradict the supplied material.
+- Keep the output practical for import into Arc Studio Pro as Fountain/plain text. Do not include page numbers, title-page metadata, or production notes.
+
+TITLE: ${bookTitle || 'Untitled'}
+
+MASTER STORY SUMMARY:
+${condensedDraft || '(not available)'}
+
+CANONICAL STORY BIBLE (treat these as continuity constraints):
+${JSON.stringify(keyElements || {}, null, 2)}
+
+CHAPTER OUTLINE, TIMELINE, NUANCES, AND EXPANDED MATERIAL:
+${chapters.map((chapter: any, index: number) => `
+=== CHAPTER ${index + 1}: ${chapter.title} ===
+Chapter summary: ${chapter.summary || ''}
+Key events: ${JSON.stringify(chapter.keyEvents || [])}
+Character traits and development: ${JSON.stringify(chapter.characterTraits || [])}
+Timeline: ${chapter.timeline || ''}
+Custom instructions and nuances: ${chapterPrompts?.[index] || '(none)'}
+Expanded chapter text:
+${expandedChapters[index]}
+`).join('\n')}
+
+Now write the complete screenplay in Fountain format.`;
+
+    console.log(`[Backend] Generating screenplay from ${chapters.length} chapters (prompt length: ${screenplayPrompt.length} chars)`);
+    const screenplay = (await generateWithModel(screenplayPrompt, model, openaiClient))
+      .replace(/^```(?:fountain|screenplay|text)?\s*\n?/i, '')
+      .replace(/\n?```$/i, '')
+      .trim();
+
+    return res.json({ screenplay });
+  } catch (error: any) {
+    console.error(`[Backend] Screenplay generation error: ${error.message || error}`);
+    return res.status(500).json({ error: `Screenplay generation failed: ${error.message || 'Unknown error'}` });
+  }
+});
+
 // Save full story state to story.json (frontend should POST the entire progress/state)
 app.post('/api/save-state', async (req, res) => {
   try {
