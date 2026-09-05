@@ -9,6 +9,46 @@ interface ScreenplayModalProps {
   isGenerating: boolean;
 }
 
+const isSceneHeading = (line: string) => /^(INT\.|EXT\.|INT\/EXT\.|I\/E\.|EST\.)/i.test(line);
+const isTransition = (line: string) => /^(FADE IN:|FADE OUT\.?|CUT TO:|DISSOLVE TO:|SMASH CUT TO:)/i.test(line);
+const isCharacterCue = (line: string) => {
+  const trimmed = line.trim();
+  return trimmed.length > 0
+    && trimmed === trimmed.toUpperCase()
+    && /[A-Z]/.test(trimmed)
+    && !isSceneHeading(trimmed)
+    && !isTransition(trimmed)
+    && !trimmed.startsWith('(')
+    && !trimmed.endsWith(':');
+};
+
+const renderScreenplay = (screenplay: string) => screenplay
+  .split(/\n\s*\n/)
+  .map((block, index) => {
+    const lines = block.split('\n').map(line => line.trimEnd());
+    const firstLine = lines[0]?.trim() || '';
+
+    if (isSceneHeading(firstLine)) {
+      return <div key={index} className="screenplay-scene-heading">{block}</div>;
+    }
+
+    if (isTransition(firstLine)) {
+      return <div key={index} className="screenplay-transition">{block}</div>;
+    }
+
+    if (isCharacterCue(firstLine)) {
+      const dialogue = lines.slice(1).join('\n').trim();
+      return (
+        <div key={index} className="screenplay-dialogue-group">
+          <div className="screenplay-character-cue">{firstLine}</div>
+          {dialogue && <div className="screenplay-dialogue">{dialogue}</div>}
+        </div>
+      );
+    }
+
+    return <div key={index} className="screenplay-action">{block}</div>;
+  });
+
 export const ScreenplayModal: React.FC<ScreenplayModalProps> = ({
   isOpen,
   screenplay,
@@ -51,9 +91,9 @@ export const ScreenplayModal: React.FC<ScreenplayModalProps> = ({
         </div>
 
         <div className="overflow-y-auto bg-[#d8d4ca] p-4 sm:p-8">
-          <pre className="screenplay-page mx-auto max-w-4xl whitespace-pre-wrap bg-white px-8 py-10 text-[12px] leading-[1.35] text-black shadow-xl sm:px-20 sm:py-14">
-            {screenplay}
-          </pre>
+          <div className="screenplay-page mx-auto max-w-4xl bg-white px-8 py-10 text-[12px] leading-[1.35] text-black shadow-xl sm:px-20 sm:py-14">
+            {renderScreenplay(screenplay)}
+          </div>
         </div>
 
         <div className="flex flex-wrap justify-end gap-3 border-t border-slate-700 bg-slate-950 px-6 py-4">

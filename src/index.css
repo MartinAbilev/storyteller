@@ -11,6 +11,50 @@ body {
   font-variant-ligatures: none;
 }
 
+.screenplay-action,
+.screenplay-scene-heading,
+.screenplay-transition {
+  white-space: pre-wrap;
+  margin-bottom: 1.15rem;
+}
+
+.screenplay-scene-heading {
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.screenplay-transition {
+  text-align: right;
+  font-weight: 700;
+}
+
+.screenplay-dialogue-group {
+  margin: 1.15rem auto;
+}
+
+.screenplay-character-cue {
+  width: 42%;
+  margin-left: 29%;
+  text-align: center;
+  font-weight: 700;
+  white-space: pre-wrap;
+}
+
+.screenplay-dialogue {
+  width: 58%;
+  margin-left: 21%;
+  white-space: pre-wrap;
+  text-align: right;
+}
+
+@media (max-width: 640px) {
+  .screenplay-character-cue,
+  .screenplay-dialogue {
+    width: 90%;
+    margin-left: 5%;
+  }
+}
+
 /* Page break styles for PDF export */
 @media print {
   /* Reset and show everything first */
